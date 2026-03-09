@@ -1,0 +1,40 @@
+name: Fetch World Data Daily
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 03:00 UTC every day
+  workflow_dispatch:        # allow manual trigger from GitHub UI
+
+jobs:
+  fetch-world-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch towns.txt → A
+        run: |
+          curl -s --max-time 30 --retry 3 \
+            "https://gr112.grepolis.com/data/towns.txt" -o A
+          echo "towns.txt size: $(wc -l < A) lines"
+
+      - name: Fetch islands.txt → B
+        run: |
+          curl -s --max-time 30 --retry 3 \
+            "https://gr112.grepolis.com/data/islands.txt" -o B
+          echo "islands.txt size: $(wc -l < B) lines"
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add A B
+          if git diff --staged --quiet; then
+            echo "No changes — nothing to commit"
+          else
+            git commit -m "chore: update world data $(date -u +%Y-%m-%d)"
+            git push
+          fi
