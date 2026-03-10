@@ -1,17 +1,13 @@
 name: Fetch World Data Daily
-
 on:
   schedule:
     - cron: '0 3 * * *'   # 03:00 UTC every day
   workflow_dispatch:        # allow manual trigger from GitHub UI
-
 permissions:
   contents: write           # allow the workflow to push commits
-
 jobs:
   fetch-world-data:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -30,11 +26,23 @@ jobs:
             "https://gr112.grepolis.com/data/islands.txt" -o B
           echo "islands.txt size: $(wc -l < B) lines"
 
+      - name: Fetch players.txt → C
+        run: |
+          curl -s --max-time 30 --retry 3 \
+            "https://gr112.grepolis.com/data/players.txt" -o C
+          echo "players.txt size: $(wc -l < C) lines"
+
+      - name: Fetch alliances.txt → D
+        run: |
+          curl -s --max-time 30 --retry 3 \
+            "https://gr112.grepolis.com/data/alliances.txt" -o D
+          echo "alliances.txt size: $(wc -l < D) lines"
+
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add A B
+          git add A B C D
           if git diff --staged --quiet; then
             echo "No changes — nothing to commit"
           else
