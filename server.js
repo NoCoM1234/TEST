@@ -1,8 +1,8 @@
 'use strict';
-const express          = require('express');
-const cors             = require('cors');
-const db               = require('./database');
-const { getTownData, loadData, loadOffsets } = require('./towns');
+const express = require('express');
+const cors    = require('cors');
+const db      = require('./database');
+const { getTownData, getAttackerInfo, loadData, loadOffsets, loadPlayers, loadAlliances } = require('./towns');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -18,9 +18,9 @@ function bad(res, msg, status = 400) {
     return res.status(status).json({ ok: false, error: msg });
 }
 
-// Health check
+// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
-    res.json({ ok: true, service: 'Grepolis Master API', version: '2.2.0' });
+    res.json({ ok: true, service: 'Grepolis Master API', version: '2.3.0' });
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
@@ -63,9 +63,7 @@ app.get('/players/:world/:playerId/towns', (req, res) => {
 });
 
 // ── GET /towns/:townId1/:townId2 ──────────────────────────────────────────────
-// Returns raw lookup data for two towns — distance is calculated client-side.
-// Response: { ok, town1: {name, island_x, island_y, slot, island_type},
-//                  town2: {name, island_x, island_y, slot, island_type} }
+// Returns raw data for two towns so distance can be calculated client-side.
 app.get('/towns/:townId1/:townId2', (req, res) => {
     const { townId1, townId2 } = req.params;
     const t1 = getTownData(townId1);
@@ -75,11 +73,23 @@ app.get('/towns/:townId1/:townId2', (req, res) => {
     return res.json({ ok: true, town1: { id: townId1, ...t1 }, town2: { id: townId2, ...t2 } });
 });
 
-// 404
+// ── GET /attacker/:townId ─────────────────────────────────────────────────────
+// Given a home_town_id, returns the attacker's player name + alliance.
+// Used by the AttackNotification userscript to replace the in-game API call.
+// Response: { ok, town_name, player_name, alliance_name, alliance_id }
+app.get('/attacker/:townId', (req, res) => {
+    const info = getAttackerInfo(req.params.townId);
+    if (!info) return bad(res, `Town ${req.params.townId} not found`, 404);
+    return res.json({ ok: true, ...info });
+});
+
+// ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Grepolis Master API v2.2.0 running on port ${PORT}`);
+    console.log(`[Server] Grepolis Master API v2.3.0 running on port ${PORT}`);
     loadData();
-    loadOffsets(); // pre-load offsets.json into memory at startup
+    loadOffsets();
+    loadPlayers();
+    loadAlliances();
 });
