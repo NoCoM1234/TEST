@@ -1,14 +1,14 @@
 'use strict';
-
-const express = require('express');
-const cors    = require('cors');
-const db      = require('./database');
+const express          = require('express');
+const cors             = require('cors');
+const db               = require('./database');
+const { getTownData, loadData, loadOffsets } = require('./towns');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));   // bumped limit — towns_data can be large
+app.use(express.json({ limit: '10mb' }));
 app.use((req, _res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     next();
@@ -20,32 +20,27 @@ function bad(res, msg, status = 400) {
 
 // Health check
 app.get('/', (_req, res) => {
-    res.json({ ok: true, service: 'Grepolis Master API', version: '2.1.0' });
+    res.json({ ok: true, service: 'Grepolis Master API', version: '2.2.0' });
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
-// Body: { id, world, name, alliance, cultural_level, town_count,
-//         current_cp, next_level_cp, troops, towns_data }
 app.post('/players/push', (req, res) => {
     const b = req.body;
     const required = ['id', 'world', 'name', 'troops'];
     for (const f of required) {
         if (!b[f] && b[f] !== 0) return bad(res, `Missing field: ${f}`);
     }
-
-    // towns_data: accept array or JSON string
     let townsData = b.towns_data || '[]';
     if (Array.isArray(townsData)) townsData = JSON.stringify(townsData);
-
     db.upsertPlayer({
         id:            String(b.id),
         world:         String(b.world),
         name:          b.name,
-        alliance:      b.alliance       || '',
-        cultural_level:b.cultural_level || 0,
-        town_count:    b.town_count     || 0,
-        current_cp:    b.current_cp     || 0,
-        next_level_cp: b.next_level_cp  || 0,
+        alliance:      b.alliance        || '',
+        cultural_level:b.cultural_level  || 0,
+        town_count:    b.town_count      || 0,
+        current_cp:    b.current_cp      || 0,
+        next_level_cp: b.next_level_cp   || 0,
         troops:        typeof b.troops === 'string' ? b.troops : JSON.stringify(b.troops),
         towns_data:    townsData,
     });
@@ -53,16 +48,13 @@ app.post('/players/push', (req, res) => {
 });
 
 // ── GET /players/:world ───────────────────────────────────────────────────────
-// Returns all players for a world (lightweight — no towns_data)
 app.get('/players/:world', (req, res) => {
     const rows = db.getPlayersByWorld(req.params.world);
-    // Strip towns_data from list view to keep payload small
     const players = rows.map(({ towns_data, ...rest }) => rest);
     return res.json({ ok: true, players });
 });
 
 // ── GET /players/:world/:playerId/towns ───────────────────────────────────────
-// Returns the full towns_data array for one player
 app.get('/players/:world/:playerId/towns', (req, res) => {
     const { world, playerId } = req.params;
     const towns = db.getPlayerTowns(world, playerId);
@@ -70,9 +62,24 @@ app.get('/players/:world/:playerId/towns', (req, res) => {
     return res.json({ ok: true, towns });
 });
 
+// ── GET /towns/:townId1/:townId2 ──────────────────────────────────────────────
+// Returns raw lookup data for two towns — distance is calculated client-side.
+// Response: { ok, town1: {name, island_x, island_y, slot, island_type},
+//                  town2: {name, island_x, island_y, slot, island_type} }
+app.get('/towns/:townId1/:townId2', (req, res) => {
+    const { townId1, townId2 } = req.params;
+    const t1 = getTownData(townId1);
+    const t2 = getTownData(townId2);
+    if (!t1) return bad(res, `Town ${townId1} not found`, 404);
+    if (!t2) return bad(res, `Town ${townId2} not found`, 404);
+    return res.json({ ok: true, town1: { id: townId1, ...t1 }, town2: { id: townId2, ...t2 } });
+});
+
 // 404
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Grepolis Master API v2.1.0 running on port ${PORT}`);
+    console.log(`[Server] Grepolis Master API v2.2.0 running on port ${PORT}`);
+    loadData();
+    loadOffsets(); // pre-load offsets.json into memory at startup
 });
