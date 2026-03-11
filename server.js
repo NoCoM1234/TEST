@@ -83,6 +83,20 @@ app.get('/attacker/:townId', (req, res) => {
     return res.json({ ok: true, ...info });
 });
 
+
+// ── GET /cs-speeds ────────────────────────────────────────────────────────────
+// Returns the pre-generated table of all possible CS ship speeds.
+// Userscript caches this in localStorage and only requests it once.
+const CS_SPEEDS_PATH = require('path').join(__dirname, 'cs_speeds.json');
+let   csSpeedsCache  = null;
+app.get('/cs-speeds', (_req, res) => {
+    if (!csSpeedsCache) {
+        try { csSpeedsCache = require('fs').readFileSync(CS_SPEEDS_PATH, 'utf8'); }
+        catch { return bad(res, 'cs_speeds.json not found', 500); }
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.send(csSpeedsCache);
+});
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
