@@ -14,12 +14,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Random delay (0–60 min)
-        run: |
-          DELAY=$(( RANDOM % 3600 ))
-          echo "Sleeping ${DELAY}s before fetching..."
-          sleep $DELAY
-
       - name: Fetch towns.txt → A
         run: |
           curl -s --max-time 30 --retry 3 \
