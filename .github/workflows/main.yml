@@ -1,7 +1,7 @@
 name: Fetch World Data Daily
 on:
   schedule:
-    - cron: '0 */2 * * *'  # every 2 hours
+    - cron: '0 */3 * * *'  # every 3 hours
   workflow_dispatch:        # allow manual trigger from GitHub UI
 permissions:
   contents: write           # allow the workflow to push commits
