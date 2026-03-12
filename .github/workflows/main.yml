@@ -49,7 +49,3 @@ jobs:
             git commit -m "chore: update world data $(date -u +%Y-%m-%d)"
             git push
           fi
-          - name: Trigger Render redeploy
-  if: success()
-  run: |
-    curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
