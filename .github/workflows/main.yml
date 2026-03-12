@@ -37,7 +37,7 @@ jobs:
           curl -s --max-time 30 --retry 3 \
             "https://gr112.grepolis.com/data/alliances.txt" -o D
           echo "alliances.txt size: $(wc -l < D) lines"
-
+       
       - name: Commit and push if changed
         run: |
           git config user.name  "github-actions[bot]"
@@ -49,3 +49,7 @@ jobs:
             git commit -m "chore: update world data $(date -u +%Y-%m-%d)"
             git push
           fi
+          - name: Trigger Render redeploy
+  if: success()
+  run: |
+    curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
