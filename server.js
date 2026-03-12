@@ -97,6 +97,20 @@ app.get('/cs-speeds', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(csSpeedsCache);
 });
+// ── GET /conflicting-speeds ───────────────────────────────────────────────────
+// Returns per-unit speed tables that overlap with CS speed range.
+// Used by userscript to flag ambiguous CS detections as 'possible CS'.
+const CONFLICTING_SPEEDS_PATH = require('path').join(__dirname, 'conflicting_speeds.json');
+let   conflictingSpeedsCache  = null;
+app.get('/conflicting-speeds', (_req, res) => {
+    if (!conflictingSpeedsCache) {
+        try { conflictingSpeedsCache = require('fs').readFileSync(CONFLICTING_SPEEDS_PATH, 'utf8'); }
+        catch { return bad(res, 'conflicting_speeds.json not found', 500); }
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.send(conflictingSpeedsCache);
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
