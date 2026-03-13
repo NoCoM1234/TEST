@@ -306,7 +306,6 @@ app.post('/auth/claim', async (req, res) => {
     if (!player_id || !world_id || !origin_town_id) return res.json({ ok: false });
 
     const originInfo = getAttackerInfo(String(origin_town_id));
-    console.log('[Auth] Claim attempt:', { player_id, world_id, wood, stone, iron, origin_town_id, originInfo });
 
     if (!originInfo) return res.json({ ok: false });
 
@@ -318,7 +317,6 @@ app.post('/auth/claim', async (req, res) => {
         parseInt(iron)  || 0,
         String(originInfo.player_id),
     );
-    console.log('[Auth] Token result:', token ? 'got token' : 'null');
 
     if (!token) return res.json({ ok: false });
     return res.json({ ok: true, token });
