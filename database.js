@@ -35,14 +35,19 @@ try {
     console.log('[DB] Migrated: added status column');
 } catch (_) { /* column already exists — ignore */ }
 
+try {
+    db.exec(`ALTER TABLE players ADD COLUMN status_at INTEGER NOT NULL DEFAULT 0;`);
+    console.log('[DB] Migrated: added status_at column');
+} catch (_) { /* column already exists — ignore */ }
+
 const stmts = {
     upsert: db.prepare(`
         INSERT INTO players
             (id, world, name, alliance, cultural_level,
-             town_count, current_cp, next_level_cp, troops, towns_data, status, pushed_at)
+             town_count, current_cp, next_level_cp, troops, towns_data, status, status_at, pushed_at)
         VALUES
             (@id, @world, @name, @alliance, @cultural_level,
-             @town_count, @current_cp, @next_level_cp, @troops, @towns_data, @status, strftime('%s','now'))
+             @town_count, @current_cp, @next_level_cp, @troops, @towns_data, @status, strftime('%s','now'), strftime('%s','now'))
         ON CONFLICT(id, world) DO UPDATE SET
             name           = excluded.name,
             alliance       = excluded.alliance,
@@ -53,12 +58,13 @@ const stmts = {
             troops         = excluded.troops,
             towns_data     = excluded.towns_data,
             status         = excluded.status,
+            status_at      = excluded.status_at,
             pushed_at      = excluded.pushed_at
     `),
 
     getByWorld: db.prepare(`
         SELECT id, name, alliance, cultural_level,
-               town_count, current_cp, next_level_cp, troops, towns_data, status, pushed_at
+               town_count, current_cp, next_level_cp, troops, towns_data, status, status_at, pushed_at
         FROM players
         WHERE world = ?
         ORDER BY name ASC
@@ -137,7 +143,7 @@ function deleteExpiredRequests() {
 }
 
 function updatePlayerStatus(id, world, status) {
-    db.prepare(`UPDATE players SET status = ? WHERE id = ? AND world = ?`).run(status, id, world);
+    db.prepare(`UPDATE players SET status = ?, status_at = strftime('%s','now') WHERE id = ? AND world = ?`).run(status, id, world);
 }
 
 module.exports = { upsertPlayer, updatePlayerStatus, getPlayersByWorld, getPlayerTowns, pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests };
