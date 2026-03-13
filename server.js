@@ -134,10 +134,8 @@ app.get('/conflicting-speeds', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(conflictingSpeedsCache);
 });
-const { ..., pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests } = require('./database');
-
 // Clean expired requests every 10 minutes
-setInterval(deleteExpiredRequests, 10 * 60 * 1000);
+setInterval(db.deleteExpiredRequests, 10 * 60 * 1000);
 
 // POST /requests/push
 app.post('/requests/push', (req, res) => {
@@ -145,7 +143,7 @@ app.post('/requests/push', (req, res) => {
     const required = ['world', 'player_id', 'player_name', 'town_id', 'town_name', 'expires_at'];
     for (const f of required) if (!b[f]) return bad(res, `Missing field: ${f}`);
     if (!b.wood && !b.stone && !b.iron) return bad(res, 'At least one resource must be > 0');
-    const result = pushRequest({
+    const result = db.pushRequest({
         world:         String(b.world),
         player_id:     String(b.player_id),
         player_name:   b.player_name,
@@ -162,13 +160,13 @@ app.post('/requests/push', (req, res) => {
 
 // GET /requests/:world
 app.get('/requests/:world', (req, res) => {
-    const rows = getRequests(req.params.world);
+    const rows = db.getRequests(req.params.world);
     return res.json({ ok: true, requests: rows });
 });
 
 // PATCH /requests/:id/fulfill
 app.patch('/requests/:id/fulfill', (req, res) => {
-    fulfillRequest(req.params.id);
+    db.fulfillRequest(req.params.id);
     return res.json({ ok: true });
 });
 
@@ -176,7 +174,7 @@ app.patch('/requests/:id/fulfill', (req, res) => {
 app.delete('/requests/:id', (req, res) => {
     const player_id = req.body?.player_id;
     if (!player_id) return bad(res, 'Missing player_id');
-    deleteRequest(req.params.id, String(player_id));
+    db.deleteRequest(req.params.id, String(player_id));
     return res.json({ ok: true });
 });
 // ── 404 ───────────────────────────────────────────────────────────────────────
