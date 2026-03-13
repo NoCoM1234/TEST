@@ -43,6 +43,7 @@ app.post('/players/push', (req, res) => {
         next_level_cp: b.next_level_cp   || 0,
         troops:        typeof b.troops === 'string' ? b.troops : JSON.stringify(b.troops),
         towns_data:    townsData,
+        status:        parseInt(b.status) || 3,
     });
     return res.json({ ok: true });
 });
@@ -182,6 +183,14 @@ app.delete('/requests/:id', (req, res) => {
 app.get('/alliance/:allianceId', (req, res) => {
     const name = getAllianceById(req.params.allianceId);
     return res.json({ ok: true, name: name || '' });
+});
+
+// POST /players/status
+app.post('/players/status', (req, res) => {
+    const { id, world, status } = req.body;
+    if (!id || !world || status == null) return bad(res, 'Missing fields');
+    db.updatePlayerStatus(String(id), String(world), parseInt(status));
+    return res.json({ ok: true });
 });
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
