@@ -73,6 +73,30 @@ app.get('/towns/:townId1/:townId2', (req, res) => {
     return res.json({ ok: true, town1: { id: townId1, ...t1 }, town2: { id: townId2, ...t2 } });
 });
 
+// ── POST /towns/batch ─────────────────────────────────────────────────────────
+// Accepts { ids: [townId, ...] }, returns coords for all found towns.
+// Used by userscript to pre-fetch all player town coords in one request.
+// Response: { ok, towns: { townId: { island_x, island_y, offset_x, offset_y } } }
+app.post('/towns/batch', (req, res) => {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length === 0)
+        return bad(res, 'Body must have ids array');
+    if (ids.length > 500)
+        return bad(res, 'Max 500 ids per request');
+    const result = {};
+    for (const id of ids) {
+        const t = getTownData(String(id));
+        if (!t) continue;
+        result[String(id)] = {
+            island_x: t.island_x,
+            island_y: t.island_y,
+            offset_x: t.offset_x,
+            offset_y: t.offset_y,
+        };
+    }
+    return res.json({ ok: true, towns: result });
+});
+
 // ── GET /attacker/:townId ─────────────────────────────────────────────────────
 // Given a home_town_id, returns the attacker's player name + alliance.
 // Used by the AttackNotification userscript to replace the in-game API call.
