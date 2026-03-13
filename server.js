@@ -242,7 +242,6 @@ app.delete('/admin/whitelist/:playerId', async (req, res) => {
 
 
 // ── AUTH / WHITELIST ──────────────────────────────────────────────────────────
-const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
 
 // GET /auth/check?player_id=xxx — called by userscript on load
 app.get('/auth/check', async (req, res) => {
