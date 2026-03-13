@@ -52,7 +52,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'X-Timestamp', 'X-Signature'],
 }));
 app.options('*', cors());
 app.use(express.json({ limit: '10mb' }));
