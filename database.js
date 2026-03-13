@@ -176,10 +176,12 @@ async function registerActivation(data) {
     });
 }
 
-async function claimActivation(player_id, world_id, wood, stone, iron) {
+async function claimActivation(player_id, world_id, wood, stone, iron, origin_player_id) {
     const db  = await getDb();
     const act = await db.collection('activations').findOne({
-        player_id, world_id, wood, stone, iron, used: false,
+        player_id, world_id, wood, stone, iron,
+        origin_player_id: String(origin_player_id), // must match registered sender
+        used: false,
     });
     if (!act) return null;
 
