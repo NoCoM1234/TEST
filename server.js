@@ -3,6 +3,15 @@ const express = require('express');
 const cors    = require('cors');
 const db      = require('./database');
 const crypto   = require('crypto');
+
+function xorHex(a, b) {
+    let result = '';
+    for (let i = 0; i < a.length; i++) {
+        result += (parseInt(a[i], 16) ^ parseInt(b[i % b.length], 16)).toString(16);
+    }
+    return result;
+}
+
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
@@ -302,32 +311,33 @@ app.post('/auth/register', async (req, res) => {
 // ── POST /auth/claim ──────────────────────────────────────────────────────────
 // Called by the script when it detects a matching trade.
 app.post('/auth/claim', async (req, res) => {
-    const { player_id, world_id, wood, stone, iron, origin_town_id } = req.body;
-    if (!player_id || !world_id || !origin_town_id) return res.json({ ok: false });
+    const { player_id, world_id, wood, stone, iron, origin_town_id, part_b } = req.body;
+    if (!player_id || !world_id || !origin_town_id || !part_b) return res.json({ ok: false });
 
     const originInfo = getAttackerInfo(String(origin_town_id));
-
     if (!originInfo) return res.json({ ok: false });
 
-    const token = await db.claimActivation(
+    const part_a = await db.claimActivation(
         String(player_id),
         String(world_id),
         parseInt(wood)  || 0,
         parseInt(stone) || 0,
         parseInt(iron)  || 0,
         String(originInfo.player_id),
+        part_b,
     );
 
-    if (!token) return res.json({ ok: false });
-    return res.json({ ok: true, token });
+    if (!part_a) return res.json({ ok: false });
+    return res.json({ ok: true, part_a });
 });
 
 // ── POST /auth/verify ─────────────────────────────────────────────────────────
-// Called by the script to verify token is still valid on load.
+// Called by the script on every load to verify token is still valid.
 app.post('/auth/verify', async (req, res) => {
-    const { player_id, world_id, token } = req.body;
-    if (!player_id || !world_id || !token) return res.json({ ok: false });
-    const valid = await db.verifyToken(String(player_id), String(world_id), token);
+    const { player_id, world_id, part_a, part_b } = req.body;
+    if (!player_id || !world_id || !part_a || !part_b) return res.json({ ok: false });
+    const part_a_xor_b = xorHex(part_a, part_b);
+    const valid = await db.verifyToken(String(player_id), String(world_id), part_a_xor_b);
     return res.json({ ok: valid });
 });
 
@@ -345,7 +355,7 @@ app.post('/auth/revoke', async (req, res) => {
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Grepolis Master API v2.3.0 running on port ${PORT}`);
+    console.log(`[Server] Master API v2.3.0 running on port ${PORT}`);
     loadData();
     loadOffsets();
     loadPlayers();
