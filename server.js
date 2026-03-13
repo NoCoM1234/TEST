@@ -37,17 +37,11 @@ async function verifyHmac(req, res, next) {
     const part_axorb = req.headers['x-token'];
     if (!part_axorb) return res.status(401).json({ ok: false, error: 'Missing token header' });
     const server_axorb = xorHex(row.token, row.part_c);
-    console.log('[HMAC] client x-token:', part_axorb.substring(0, 16));
-    console.log('[HMAC] server axorb:  ', server_axorb.substring(0, 16));
-    console.log('[HMAC] token match:', server_axorb === part_axorb);
     if (server_axorb !== part_axorb) return res.status(401).json({ ok: false, error: 'Invalid token' });
 
     // Both sides use part_axorb as the HMAC signing key
     const payload  = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', part_axorb).update(payload).digest('hex');
-    console.log('[HMAC] expected sig:', expected.substring(0, 16));
-    console.log('[HMAC] received sig:', sig.substring(0, 16));
-    console.log('[HMAC] sig match:', expected === sig);
     if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
 
     next();
