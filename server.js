@@ -17,6 +17,10 @@ function xorHex(a, b) {
 async function verifyHmac(req, res, next) {
     const ts  = req.headers['x-timestamp'];
     const sig = req.headers['x-signature'];
+    console.log('[HMAC] ts:', ts);
+console.log('[HMAC] rawBody length:', req.rawBody?.length);
+console.log('[HMAC] rawBody preview:', req.rawBody?.substring(0, 50));
+console.log('[HMAC] received:', sig);
     if (!ts || !sig) return res.status(401).json({ ok: false, error: 'Missing signature' });
 
     // Reject requests older than 60 seconds
@@ -36,6 +40,7 @@ async function verifyHmac(req, res, next) {
     // Recompute HMAC using stored token as key
     const payload  = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', row.token).update(payload).digest('hex');
+    console.log('[HMAC] expected:', expected);
     if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
 
     next();
