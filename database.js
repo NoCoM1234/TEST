@@ -16,6 +16,7 @@ async function getDb() {
     await _db.collection('players').createIndex({ id: 1, world: 1 }, { unique: true });
     await _db.collection('players').createIndex({ world: 1 });
     await _db.collection('requests').createIndex({ world: 1, expires_at: 1 });
+    await _db.collection('whitelist').createIndex({ player_id: 1 }, { unique: true });
 
     return _db;
 }
@@ -126,6 +127,33 @@ async function deleteExpiredRequests() {
     if (r.deletedCount > 0) console.log(`[DB] Deleted ${r.deletedCount} expired request(s)`);
 }
 
+// ── Whitelist ─────────────────────────────────────────────────────────────────
+
+async function isPlayerWhitelisted(player_id) {
+    const db  = await getDb();
+    const row = await db.collection('whitelist').findOne({ player_id: String(player_id) });
+    return !!row;
+}
+
+async function addToWhitelist(player_id, note) {
+    const db = await getDb();
+    await db.collection('whitelist').updateOne(
+        { player_id: String(player_id) },
+        { $set: { player_id: String(player_id), note: note || '', added_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
+
+async function removeFromWhitelist(player_id) {
+    const db = await getDb();
+    await db.collection('whitelist').deleteOne({ player_id: String(player_id) });
+}
+
+async function getWhitelist() {
+    const db = await getDb();
+    return db.collection('whitelist').find({}, { projection: { _id: 0 } }).sort({ added_at: 1 }).toArray();
+}
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 // Connect eagerly and schedule cleanup
 getDb().catch(err => console.error('[DB] Connection failed:', err));
@@ -141,4 +169,80 @@ module.exports = {
     fulfillRequest,
     deleteRequest,
     deleteExpiredRequests,
+    isPlayerWhitelisted,
+    addToWhitelist,
+    removeFromWhitelist,
+    getWhitelist,
 };
+
+// ── Auth / Activations ────────────────────────────────────────────────────────
+
+async function registerActivation(data) {
+    const db = await getDb();
+    // Delete any existing unused activation for this player+world
+    await db.collection('activations').deleteOne({
+        player_id: data.player_id,
+        world_id:  data.world_id,
+        used:      false,
+    });
+    await db.collection('activations').insertOne({
+        player_id:        data.player_id,
+        world_id:         data.world_id,
+        wood:             data.wood,
+        stone:            data.stone,
+        iron:             data.iron,
+        origin_player_id: data.origin_player_id, // your player ID — checked server side
+        used:             false,
+        token:            null,
+        created_at:       Math.floor(Date.now() / 1000),
+    });
+}
+
+async function claimActivation(player_id, world_id, wood, stone, iron, origin_town_id) {
+    const db  = await getDb();
+
+    // Find a pending activation for this player+world with matching resources
+    const act = await db.collection('activations').findOne({
+        player_id,
+        world_id,
+        wood,
+        stone,
+        iron,
+        used: false,
+    });
+    if (!act) return null;
+
+    // Verify the origin town belongs to the authorized sender
+    // by checking origin_town_id is owned by origin_player_id in towns data
+    // (we pass origin_player_id stored at registration time)
+    // For now we trust origin_town_id check will be done via towns.js on server
+    // Generate a secure random token
+    const crypto = require('crypto');
+    const token  = crypto.randomBytes(48).toString('hex');
+
+    await db.collection('activations').updateOne(
+        { _id: act._id },
+        { $set: { used: true, token, activated_at: Math.floor(Date.now() / 1000) } }
+    );
+
+    // Store token in players-like auth collection
+    await db.collection('auth_tokens').updateOne(
+        { player_id, world_id },
+        { $set: { player_id, world_id, token, created_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+
+    return token;
+}
+
+async function verifyToken(player_id, world_id, token) {
+    const db  = await getDb();
+    const row = await db.collection('auth_tokens').findOne({ player_id, world_id, token });
+    return !!row;
+}
+
+async function revokeToken(player_id, world_id) {
+    const db = await getDb();
+    await db.collection('auth_tokens').deleteOne({ player_id, world_id });
+    await db.collection('activations').deleteMany({ player_id, world_id });
+}
