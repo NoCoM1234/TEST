@@ -1,149 +1,144 @@
 'use strict';
 
-const Database = require('better-sqlite3');
-const path = require('path');
+const { MongoClient, ObjectId } = require('mongodb');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
-const db = new Database(DB_PATH);
+const MONGO_URI = process.env.MONGO_URI;
+let   _db       = null;
 
-db.pragma('journal_mode = WAL');
+async function getDb() {
+    if (_db) return _db;
+    const client = new MongoClient(MONGO_URI);
+    await client.connect();
+    _db = client.db('grepolis');
+    console.log('[DB] MongoDB connected');
 
-db.exec(`
-    CREATE TABLE IF NOT EXISTS players (
-        id             TEXT NOT NULL,
-        world          TEXT NOT NULL,
-        name           TEXT NOT NULL,
-        alliance       TEXT NOT NULL DEFAULT '',
-        cultural_level INTEGER NOT NULL DEFAULT 0,
-        town_count     INTEGER NOT NULL DEFAULT 0,
-        current_cp     INTEGER NOT NULL DEFAULT 0,
-        next_level_cp  INTEGER NOT NULL DEFAULT 0,
-        troops         TEXT NOT NULL DEFAULT '{}',
-        towns_data     TEXT NOT NULL DEFAULT '[]',
-        pushed_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-        PRIMARY KEY (id, world)
+    // ── Indexes ──────────────────────────────────────────────────────────────
+    await _db.collection('players').createIndex({ id: 1, world: 1 }, { unique: true });
+    await _db.collection('players').createIndex({ world: 1 });
+    await _db.collection('requests').createIndex({ world: 1, expires_at: 1 });
+
+    return _db;
+}
+
+// ── Players ───────────────────────────────────────────────────────────────────
+
+async function upsertPlayer(data) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    await db.collection('players').updateOne(
+        { id: data.id, world: data.world },
+        { $set: {
+            name:          data.name,
+            alliance:      data.alliance      || '',
+            cultural_level:data.cultural_level || 0,
+            town_count:    data.town_count     || 0,
+            current_cp:    data.current_cp     || 0,
+            next_level_cp: data.next_level_cp  || 0,
+            troops:        data.troops,
+            towns_data:    data.towns_data,
+            status:        data.status         || 3,
+            status_at:     now,
+            pushed_at:     now,
+        }},
+        { upsert: true }
     );
-`);
+}
 
-try {
-    db.exec(`ALTER TABLE players ADD COLUMN towns_data TEXT NOT NULL DEFAULT '[]';`);
-    console.log('[DB] Migrated: added towns_data column');
-} catch (_) { /* column already exists — ignore */ }
+async function updatePlayerStatus(id, world, status) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    await db.collection('players').updateOne(
+        { id, world },
+        { $set: { status, status_at: now } }
+    );
+}
 
-try {
-    db.exec(`ALTER TABLE players ADD COLUMN status INTEGER NOT NULL DEFAULT 3;`);
-    console.log('[DB] Migrated: added status column');
-} catch (_) { /* column already exists — ignore */ }
+async function getPlayersByWorld(world) {
+    const db = await getDb();
+    const rows = await db.collection('players')
+        .find({ world }, { projection: { _id: 0, towns_data: 0 } })
+        .sort({ name: 1 })
+        .toArray();
+    return rows;
+}
 
-try {
-    db.exec(`ALTER TABLE players ADD COLUMN status_at INTEGER NOT NULL DEFAULT 0;`);
-    console.log('[DB] Migrated: added status_at column');
-} catch (_) { /* column already exists — ignore */ }
-
-const stmts = {
-    upsert: db.prepare(`
-        INSERT INTO players
-            (id, world, name, alliance, cultural_level,
-             town_count, current_cp, next_level_cp, troops, towns_data, status, status_at, pushed_at)
-        VALUES
-            (@id, @world, @name, @alliance, @cultural_level,
-             @town_count, @current_cp, @next_level_cp, @troops, @towns_data, @status, strftime('%s','now'), strftime('%s','now'))
-        ON CONFLICT(id, world) DO UPDATE SET
-            name           = excluded.name,
-            alliance       = excluded.alliance,
-            cultural_level = excluded.cultural_level,
-            town_count     = excluded.town_count,
-            current_cp     = excluded.current_cp,
-            next_level_cp  = excluded.next_level_cp,
-            troops         = excluded.troops,
-            towns_data     = excluded.towns_data,
-            status         = excluded.status,
-            status_at      = excluded.status_at,
-            pushed_at      = excluded.pushed_at
-    `),
-
-    getByWorld: db.prepare(`
-        SELECT id, name, alliance, cultural_level,
-               town_count, current_cp, next_level_cp, troops, towns_data, status, status_at, pushed_at
-        FROM players
-        WHERE world = ?
-        ORDER BY name ASC
-    `),
-
-    getPlayerTowns: db.prepare(`
-        SELECT towns_data
-        FROM players
-        WHERE world = ? AND id = ?
-    `),
-
-    cleanupStale: db.prepare(`
-        DELETE FROM players WHERE pushed_at < strftime('%s','now') - 604800
-    `),
-};
-
-function upsertPlayer(data) { stmts.upsert.run(data); }
-function getPlayersByWorld(world) { return stmts.getByWorld.all(world); }
-function getPlayerTowns(world, playerId) {
-    const row = stmts.getPlayerTowns.get(world, playerId);
+async function getPlayerTowns(world, playerId) {
+    const db  = await getDb();
+    const row = await db.collection('players').findOne(
+        { id: playerId, world },
+        { projection: { _id: 0, towns_data: 1 } }
+    );
     if (!row) return null;
-    try { return JSON.parse(row.towns_data); } catch { return []; }
-}
-function cleanupStale() {
-    const r = stmts.cleanupStale.run();
-    if (r.changes > 0) console.log(`[DB] Cleaned up ${r.changes} stale player(s)`);
+    try { return typeof row.towns_data === 'string' ? JSON.parse(row.towns_data) : row.towns_data; }
+    catch { return []; }
 }
 
+async function cleanupStale() {
+    const db  = await getDb();
+    const cutoff = Math.floor(Date.now() / 1000) - 604800; // 7 days
+    const r = await db.collection('players').deleteMany({ pushed_at: { $lt: cutoff } });
+    if (r.deletedCount > 0) console.log(`[DB] Cleaned up ${r.deletedCount} stale player(s)`);
+}
+
+// ── Requests ──────────────────────────────────────────────────────────────────
+
+async function pushRequest(data) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    const result = await db.collection('requests').insertOne({
+        ...data,
+        fulfilled:  0,
+        created_at: now,
+    });
+    return { lastInsertId: result.insertedId.toString() };
+}
+
+async function getRequests(world) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    const rows = await db.collection('requests')
+        .find({ world, expires_at: { $gt: now } })
+        .sort({ created_at: -1 })
+        .toArray();
+    // Convert _id to id for client compatibility
+    return rows.map(r => ({ ...r, id: r._id.toString(), _id: undefined }));
+}
+
+async function fulfillRequest(id) {
+    const db = await getDb();
+    await db.collection('requests').updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { fulfilled: 1 } }
+    );
+}
+
+async function deleteRequest(id, player_id) {
+    const db = await getDb();
+    await db.collection('requests').deleteOne(
+        { _id: new ObjectId(id), player_id }
+    );
+}
+
+async function deleteExpiredRequests() {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    const r   = await db.collection('requests').deleteMany({ expires_at: { $lte: now } });
+    if (r.deletedCount > 0) console.log(`[DB] Deleted ${r.deletedCount} expired request(s)`);
+}
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+// Connect eagerly and schedule cleanup
+getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
-cleanupStale();
-db.exec(`
-    CREATE TABLE IF NOT EXISTS requests (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        world       TEXT    NOT NULL,
-        player_id   TEXT    NOT NULL,
-        player_name TEXT    NOT NULL,
-        alliance_name TEXT  DEFAULT '',
-        town_id     TEXT    NOT NULL,
-        town_name   TEXT    NOT NULL,
-        wood        INTEGER DEFAULT 0,
-        stone       INTEGER DEFAULT 0,
-        iron        INTEGER DEFAULT 0,
-        expires_at  INTEGER NOT NULL,
-        fulfilled   INTEGER DEFAULT 0,
-        created_at  INTEGER NOT NULL
-    )
-`);
-function pushRequest(data) {
-    const stmt = db.prepare(`
-        INSERT INTO requests (world, player_id, player_name, alliance_name, town_id, town_name, wood, stone, iron, expires_at, fulfilled, created_at)
-        VALUES (@world, @player_id, @player_name, @alliance_name, @town_id, @town_name, @wood, @stone, @iron, @expires_at, 0, @created_at)
-    `);
-    return stmt.run({ ...data, created_at: Math.floor(Date.now() / 1000) });
-}
 
-function getRequests(world) {
-    const now = Math.floor(Date.now() / 1000);
-    return db.prepare(`
-        SELECT * FROM requests
-        WHERE world = ? AND expires_at > ?
-        ORDER BY created_at DESC
-    `).all(world, now);
-}
-
-function fulfillRequest(id) {
-    return db.prepare(`UPDATE requests SET fulfilled = 1 WHERE id = ?`).run(id);
-}
-
-function deleteRequest(id, player_id) {
-    return db.prepare(`DELETE FROM requests WHERE id = ? AND player_id = ?`).run(id, player_id);
-}
-
-function deleteExpiredRequests() {
-    const now = Math.floor(Date.now() / 1000);
-    return db.prepare(`DELETE FROM requests WHERE expires_at <= ?`).run(now);
-}
-
-function updatePlayerStatus(id, world, status) {
-    db.prepare(`UPDATE players SET status = ?, status_at = strftime('%s','now') WHERE id = ? AND world = ?`).run(status, id, world);
-}
-
-module.exports = { upsertPlayer, updatePlayerStatus, getPlayersByWorld, getPlayerTowns, pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests };
+module.exports = {
+    upsertPlayer,
+    updatePlayerStatus,
+    getPlayersByWorld,
+    getPlayerTowns,
+    pushRequest,
+    getRequests,
+    fulfillRequest,
+    deleteRequest,
+    deleteExpiredRequests,
+};
