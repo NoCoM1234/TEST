@@ -136,4 +136,8 @@ function deleteExpiredRequests() {
     return db.prepare(`DELETE FROM requests WHERE expires_at <= ?`).run(now);
 }
 
-module.exports = { upsertPlayer, getPlayersByWorld, getPlayerTowns, pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests };
+function updatePlayerStatus(id, world, status) {
+    db.prepare(`UPDATE players SET status = ? WHERE id = ? AND world = ?`).run(status, id, world);
+}
+
+module.exports = { upsertPlayer, updatePlayerStatus, getPlayersByWorld, getPlayerTowns, pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests };
