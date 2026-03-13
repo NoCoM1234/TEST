@@ -9,7 +9,7 @@ async function getDb() {
     if (_db) return _db;
     const client = new MongoClient(MONGO_URI);
     await client.connect();
-    _db = client.db('grepolis');
+    _db = client.db('Master');
     console.log('[DB] MongoDB connected');
 
     // ── Indexes ──────────────────────────────────────────────────────────────
