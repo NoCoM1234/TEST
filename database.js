@@ -154,32 +154,10 @@ async function getWhitelist() {
     return db.collection('whitelist').find({}, { projection: { _id: 0 } }).sort({ added_at: 1 }).toArray();
 }
 
-// ── Startup ───────────────────────────────────────────────────────────────────
-// Connect eagerly and schedule cleanup
-getDb().catch(err => console.error('[DB] Connection failed:', err));
-setInterval(cleanupStale, 86400000);
-
-module.exports = {
-    upsertPlayer,
-    updatePlayerStatus,
-    getPlayersByWorld,
-    getPlayerTowns,
-    pushRequest,
-    getRequests,
-    fulfillRequest,
-    deleteRequest,
-    deleteExpiredRequests,
-    isPlayerWhitelisted,
-    addToWhitelist,
-    removeFromWhitelist,
-    getWhitelist,
-};
-
 // ── Auth / Activations ────────────────────────────────────────────────────────
 
 async function registerActivation(data) {
     const db = await getDb();
-    // Delete any existing unused activation for this player+world
     await db.collection('activations').deleteOne({
         player_id: data.player_id,
         world_id:  data.world_id,
@@ -191,32 +169,20 @@ async function registerActivation(data) {
         wood:             data.wood,
         stone:            data.stone,
         iron:             data.iron,
-        origin_player_id: data.origin_player_id, // your player ID — checked server side
+        origin_player_id: data.origin_player_id,
         used:             false,
         token:            null,
         created_at:       Math.floor(Date.now() / 1000),
     });
 }
 
-async function claimActivation(player_id, world_id, wood, stone, iron, origin_town_id) {
+async function claimActivation(player_id, world_id, wood, stone, iron) {
     const db  = await getDb();
-
-    // Find a pending activation for this player+world with matching resources
     const act = await db.collection('activations').findOne({
-        player_id,
-        world_id,
-        wood,
-        stone,
-        iron,
-        used: false,
+        player_id, world_id, wood, stone, iron, used: false,
     });
     if (!act) return null;
 
-    // Verify the origin town belongs to the authorized sender
-    // by checking origin_town_id is owned by origin_player_id in towns data
-    // (we pass origin_player_id stored at registration time)
-    // For now we trust origin_town_id check will be done via towns.js on server
-    // Generate a secure random token
     const crypto = require('crypto');
     const token  = crypto.randomBytes(48).toString('hex');
 
@@ -225,7 +191,6 @@ async function claimActivation(player_id, world_id, wood, stone, iron, origin_to
         { $set: { used: true, token, activated_at: Math.floor(Date.now() / 1000) } }
     );
 
-    // Store token in players-like auth collection
     await db.collection('auth_tokens').updateOne(
         { player_id, world_id },
         { $set: { player_id, world_id, token, created_at: Math.floor(Date.now() / 1000) } },
@@ -246,3 +211,27 @@ async function revokeToken(player_id, world_id) {
     await db.collection('auth_tokens').deleteOne({ player_id, world_id });
     await db.collection('activations').deleteMany({ player_id, world_id });
 }
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+getDb().catch(err => console.error('[DB] Connection failed:', err));
+setInterval(cleanupStale, 86400000);
+
+module.exports = {
+    upsertPlayer,
+    updatePlayerStatus,
+    getPlayersByWorld,
+    getPlayerTowns,
+    pushRequest,
+    getRequests,
+    fulfillRequest,
+    deleteRequest,
+    deleteExpiredRequests,
+    isPlayerWhitelisted,
+    addToWhitelist,
+    removeFromWhitelist,
+    getWhitelist,
+    registerActivation,
+    claimActivation,
+    verifyToken,
+    revokeToken,
+};
