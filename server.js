@@ -2,6 +2,10 @@
 const express = require('express');
 const cors    = require('cors');
 const db      = require('./database');
+const crypto   = require('crypto');
+const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
+
+const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
 const { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, loadPlayers, loadAlliances } = require('./towns');
 
 const app  = express();
@@ -201,6 +205,140 @@ app.post('/players/status', async (req, res) => {
     const { id, world, status } = req.body;
     if (!id || !world || status == null) return bad(res, 'Missing fields');
     await db.updatePlayerStatus(String(id), String(world), parseInt(status));
+    return res.json({ ok: true });
+});
+
+// ── AUTH / WHITELIST ──────────────────────────────────────────────────────────
+
+// GET /auth/check/:playerId — called by userscript on load
+app.get('/auth/check/:playerId', async (req, res) => {
+    const allowed = await db.isPlayerWhitelisted(req.params.playerId);
+    // Always return 200 — don't hint why it failed
+    return res.json({ ok: allowed });
+});
+
+// GET /admin/whitelist — view all whitelisted players
+app.get('/admin/whitelist', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const list = await db.getWhitelist();
+    return res.json({ ok: true, list });
+});
+
+// POST /admin/whitelist — add a player { player_id, note }
+app.post('/admin/whitelist', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const { player_id, note } = req.body;
+    if (!player_id) return bad(res, 'Missing player_id');
+    await db.addToWhitelist(String(player_id), note || '');
+    return res.json({ ok: true });
+});
+
+// DELETE /admin/whitelist/:playerId — remove a player
+app.delete('/admin/whitelist/:playerId', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    await db.removeFromWhitelist(req.params.playerId);
+    return res.json({ ok: true });
+});
+
+
+// ── AUTH / WHITELIST ──────────────────────────────────────────────────────────
+const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
+
+// GET /auth/check?player_id=xxx — called by userscript on load
+app.get('/auth/check', async (req, res) => {
+    const { player_id } = req.query;
+    if (!player_id) return bad(res, 'Missing player_id');
+    const allowed = await db.isPlayerWhitelisted(String(player_id));
+    return res.json({ ok: true, allowed });
+});
+
+// POST /auth/add — add a player to whitelist (admin only)
+// Body: { key, player_id, note? }
+app.post('/auth/add', async (req, res) => {
+    const { key, player_id, note } = req.body;
+    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    if (!player_id) return bad(res, 'Missing player_id');
+    await db.addToWhitelist(String(player_id), note || '');
+    return res.json({ ok: true });
+});
+
+// POST /auth/remove — remove a player from whitelist (admin only)
+// Body: { key, player_id }
+app.post('/auth/remove', async (req, res) => {
+    const { key, player_id } = req.body;
+    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    if (!player_id) return bad(res, 'Missing player_id');
+    await db.removeFromWhitelist(String(player_id));
+    return res.json({ ok: true });
+});
+
+// GET /auth/list?key=xxx — list all whitelisted players (admin only)
+app.get('/auth/list', async (req, res) => {
+    const { key } = req.query;
+    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    const list = await db.getWhitelist();
+    return res.json({ ok: true, list });
+});
+
+
+// ── POST /auth/register ───────────────────────────────────────────────────────
+// Called by YOU manually to register a new user activation combo.
+// Protected by AUTH_REGISTER_SECRET env var.
+app.post('/auth/register', async (req, res) => {
+    const { secret, player_id, world_id, wood, stone, iron, origin_player_id } = req.body;
+    if (secret !== AUTH_REGISTER_SECRET) return bad(res, 'Unauthorized', 401);
+    if (!player_id || !world_id || !origin_player_id) return bad(res, 'Missing fields');
+    if (wood == null && stone == null && iron == null) return bad(res, 'No resources specified');
+    await db.registerActivation({
+        player_id:        String(player_id),
+        world_id:         String(world_id),
+        wood:             parseInt(wood)  || 0,
+        stone:            parseInt(stone) || 0,
+        iron:             parseInt(iron)  || 0,
+        origin_player_id: String(origin_player_id),
+    });
+    return res.json({ ok: true });
+});
+
+// ── POST /auth/claim ──────────────────────────────────────────────────────────
+// Called by the script when it detects a matching trade.
+app.post('/auth/claim', async (req, res) => {
+    const { player_id, world_id, wood, stone, iron, origin_town_id } = req.body;
+    if (!player_id || !world_id) return bad(res, 'Missing fields');
+
+    // Verify origin_town_id belongs to origin_player_id via towns data
+    const townInfo = getTownData(String(origin_town_id));
+    if (!townInfo) return res.json({ ok: false }); // silent fail
+
+    const token = await db.claimActivation(
+        String(player_id),
+        String(world_id),
+        parseInt(wood)  || 0,
+        parseInt(stone) || 0,
+        parseInt(iron)  || 0,
+        String(origin_town_id),
+    );
+
+    if (!token) return res.json({ ok: false }); // silent fail — no error message
+    return res.json({ ok: true, token });
+});
+
+// ── POST /auth/verify ─────────────────────────────────────────────────────────
+// Called by the script to verify token is still valid on load.
+app.post('/auth/verify', async (req, res) => {
+    const { player_id, world_id, token } = req.body;
+    if (!player_id || !world_id || !token) return res.json({ ok: false });
+    const valid = await db.verifyToken(String(player_id), String(world_id), token);
+    return res.json({ ok: valid });
+});
+
+// ── POST /auth/revoke ─────────────────────────────────────────────────────────
+// Called by YOU manually to revoke a user's access.
+app.post('/auth/revoke', async (req, res) => {
+    const { secret, player_id, world_id } = req.body;
+    if (secret !== AUTH_REGISTER_SECRET) return bad(res, 'Unauthorized', 401);
+    if (!player_id || !world_id) return bad(res, 'Missing fields');
+    await db.revokeToken(String(player_id), String(world_id));
     return res.json({ ok: true });
 });
 
