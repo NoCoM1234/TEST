@@ -34,7 +34,7 @@ async function verifyHmac(req, res, next) {
     if (!row) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
     // Recompute HMAC using stored token as key
-    const payload  = ts + JSON.stringify(req.body);
+    const payload  = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', row.token).update(payload).digest('hex');
     if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
 
@@ -52,10 +52,10 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Timestamp', 'X-Signature'],
+    allowedHeaders: ['Content-Type'],
 }));
 app.options('*', cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
 app.use((req, _res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     next();
