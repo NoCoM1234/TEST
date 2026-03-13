@@ -134,7 +134,51 @@ app.get('/conflicting-speeds', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(conflictingSpeedsCache);
 });
+const { ..., pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests } = require('./database');
 
+// Clean expired requests every 10 minutes
+setInterval(deleteExpiredRequests, 10 * 60 * 1000);
+
+// POST /requests/push
+app.post('/requests/push', (req, res) => {
+    const b = req.body;
+    const required = ['world', 'player_id', 'player_name', 'town_id', 'town_name', 'expires_at'];
+    for (const f of required) if (!b[f]) return bad(res, `Missing field: ${f}`);
+    if (!b.wood && !b.stone && !b.iron) return bad(res, 'At least one resource must be > 0');
+    const result = pushRequest({
+        world:         String(b.world),
+        player_id:     String(b.player_id),
+        player_name:   b.player_name,
+        alliance_name: b.alliance_name || '',
+        town_id:       String(b.town_id),
+        town_name:     b.town_name,
+        wood:          parseInt(b.wood)  || 0,
+        stone:         parseInt(b.stone) || 0,
+        iron:          parseInt(b.iron)  || 0,
+        expires_at:    parseInt(b.expires_at),
+    });
+    return res.json({ ok: true, id: result.lastInsertRowid });
+});
+
+// GET /requests/:world
+app.get('/requests/:world', (req, res) => {
+    const rows = getRequests(req.params.world);
+    return res.json({ ok: true, requests: rows });
+});
+
+// PATCH /requests/:id/fulfill
+app.patch('/requests/:id/fulfill', (req, res) => {
+    fulfillRequest(req.params.id);
+    return res.json({ ok: true });
+});
+
+// DELETE /requests/:id
+app.delete('/requests/:id', (req, res) => {
+    const player_id = req.body?.player_id;
+    if (!player_id) return bad(res, 'Missing player_id');
+    deleteRequest(req.params.id, String(player_id));
+    return res.json({ ok: true });
+});
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
