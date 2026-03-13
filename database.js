@@ -1,6 +1,7 @@
 'use strict';
 
 const { MongoClient, ObjectId } = require('mongodb');
+const crypto = require('crypto');
 
 const MONGO_URI = process.env.MONGO_URI;
 let   _db       = null;
@@ -12,13 +13,23 @@ async function getDb() {
     _db = client.db('Master');
     console.log('[DB] MongoDB connected');
 
-    // ── Indexes ──────────────────────────────────────────────────────────────
     await _db.collection('players').createIndex({ id: 1, world: 1 }, { unique: true });
     await _db.collection('players').createIndex({ world: 1 });
     await _db.collection('requests').createIndex({ world: 1, expires_at: 1 });
     await _db.collection('whitelist').createIndex({ player_id: 1 }, { unique: true });
+    await _db.collection('activations').createIndex({ player_id: 1, world_id: 1 });
+    await _db.collection('auth_tokens').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
 
     return _db;
+}
+
+// ── XOR helper ────────────────────────────────────────────────────────────────
+function xorHex(a, b) {
+    let result = '';
+    for (let i = 0; i < a.length; i++) {
+        result += (parseInt(a[i], 16) ^ parseInt(b[i % b.length], 16)).toString(16);
+    }
+    return result;
 }
 
 // ── Players ───────────────────────────────────────────────────────────────────
@@ -75,9 +86,9 @@ async function getPlayerTowns(world, playerId) {
 }
 
 async function cleanupStale() {
-    const db  = await getDb();
-    const cutoff = Math.floor(Date.now() / 1000) - 604800; // 7 days
-    const r = await db.collection('players').deleteMany({ pushed_at: { $lt: cutoff } });
+    const db     = await getDb();
+    const cutoff = Math.floor(Date.now() / 1000) - 604800;
+    const r      = await db.collection('players').deleteMany({ pushed_at: { $lt: cutoff } });
     if (r.deletedCount > 0) console.log(`[DB] Cleaned up ${r.deletedCount} stale player(s)`);
 }
 
@@ -101,7 +112,6 @@ async function getRequests(world) {
         .find({ world, expires_at: { $gt: now } })
         .sort({ created_at: -1 })
         .toArray();
-    // Convert _id to id for client compatibility
     return rows.map(r => ({ ...r, id: r._id.toString(), _id: undefined }));
 }
 
@@ -115,9 +125,7 @@ async function fulfillRequest(id) {
 
 async function deleteRequest(id, player_id) {
     const db = await getDb();
-    await db.collection('requests').deleteOne(
-        { _id: new ObjectId(id), player_id }
-    );
+    await db.collection('requests').deleteOne({ _id: new ObjectId(id), player_id });
 }
 
 async function deleteExpiredRequests() {
@@ -176,36 +184,46 @@ async function registerActivation(data) {
     });
 }
 
-async function claimActivation(player_id, world_id, wood, stone, iron, origin_player_id) {
+async function claimActivation(player_id, world_id, wood, stone, iron, origin_player_id, part_b) {
     const db  = await getDb();
     const act = await db.collection('activations').findOne({
-        player_id, world_id, wood, stone, iron,
-        origin_player_id: String(origin_player_id), // must match registered sender
+        player_id,
+        world_id,
+        wood,
+        stone,
+        iron,
+        origin_player_id: String(origin_player_id),
         used: false,
     });
     if (!act) return null;
 
-    const crypto = require('crypto');
-    const token  = crypto.randomBytes(48).toString('hex');
+    // Generate full token and split into 3 parts
+    const token  = crypto.randomBytes(48).toString('hex'); // 96 hex chars
+    const part_c = crypto.randomBytes(48).toString('hex'); // 96 hex chars
+    const part_a = xorHex(xorHex(token, part_b), part_c); // partA = token XOR partB XOR partC
 
     await db.collection('activations').updateOne(
         { _id: act._id },
-        { $set: { used: true, token, activated_at: Math.floor(Date.now() / 1000) } }
+        { $set: { used: true, activated_at: Math.floor(Date.now() / 1000) } }
     );
 
+    // Store token + partC on server only
     await db.collection('auth_tokens').updateOne(
         { player_id, world_id },
-        { $set: { player_id, world_id, token, created_at: Math.floor(Date.now() / 1000) } },
+        { $set: { player_id, world_id, token, part_c, created_at: Math.floor(Date.now() / 1000) } },
         { upsert: true }
     );
 
-    return token;
+    return part_a; // only partA goes to client
 }
 
-async function verifyToken(player_id, world_id, token) {
+async function verifyToken(player_id, world_id, part_a_xor_b) {
     const db  = await getDb();
-    const row = await db.collection('auth_tokens').findOne({ player_id, world_id, token });
-    return !!row;
+    const row = await db.collection('auth_tokens').findOne({ player_id, world_id });
+    if (!row) return false;
+    // reconstruct: (partA XOR partB) XOR partC = token
+    const reconstructed = xorHex(part_a_xor_b, row.part_c);
+    return reconstructed === row.token;
 }
 
 async function revokeToken(player_id, world_id) {
