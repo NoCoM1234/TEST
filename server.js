@@ -2,7 +2,7 @@
 const express = require('express');
 const cors    = require('cors');
 const db      = require('./database');
-const { getTownData, getAttackerInfo, loadData, loadOffsets, loadPlayers, loadAlliances } = require('./towns');
+const { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, loadPlayers, loadAlliances } = require('./towns');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -177,6 +177,13 @@ app.delete('/requests/:id', (req, res) => {
     db.deleteRequest(req.params.id, String(player_id));
     return res.json({ ok: true });
 });
+
+// GET /alliance/:allianceId
+app.get('/alliance/:allianceId', (req, res) => {
+    const name = getAllianceById(req.params.allianceId);
+    return res.json({ ok: true, name: name || '' });
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
