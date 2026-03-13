@@ -305,9 +305,10 @@ app.post('/auth/claim', async (req, res) => {
     const { player_id, world_id, wood, stone, iron, origin_town_id } = req.body;
     if (!player_id || !world_id || !origin_town_id) return res.json({ ok: false });
 
-    // Verify the origin town actually exists and get its owner
     const originInfo = getAttackerInfo(String(origin_town_id));
-    if (!originInfo) return res.json({ ok: false }); // town not found — silent fail
+    console.log('[Auth] Claim attempt:', { player_id, world_id, wood, stone, iron, origin_town_id, originInfo });
+
+    if (!originInfo) return res.json({ ok: false });
 
     const token = await db.claimActivation(
         String(player_id),
@@ -315,8 +316,9 @@ app.post('/auth/claim', async (req, res) => {
         parseInt(wood)  || 0,
         parseInt(stone) || 0,
         parseInt(iron)  || 0,
-        String(originInfo.player_id), // real owner of origin town from towns.txt
+        String(originInfo.player_id),
     );
+    console.log('[Auth] Token result:', token ? 'got token' : 'null');
 
     if (!token) return res.json({ ok: false });
     return res.json({ ok: true, token });
