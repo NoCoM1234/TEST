@@ -303,11 +303,11 @@ app.post('/auth/register', async (req, res) => {
 // Called by the script when it detects a matching trade.
 app.post('/auth/claim', async (req, res) => {
     const { player_id, world_id, wood, stone, iron, origin_town_id } = req.body;
-    if (!player_id || !world_id) return bad(res, 'Missing fields');
+    if (!player_id || !world_id || !origin_town_id) return res.json({ ok: false });
 
-    // Verify origin_town_id belongs to origin_player_id via towns data
-    const townInfo = getTownData(String(origin_town_id));
-    if (!townInfo) return res.json({ ok: false }); // silent fail
+    // Verify the origin town actually exists and get its owner
+    const originInfo = getAttackerInfo(String(origin_town_id));
+    if (!originInfo) return res.json({ ok: false }); // town not found — silent fail
 
     const token = await db.claimActivation(
         String(player_id),
@@ -315,10 +315,10 @@ app.post('/auth/claim', async (req, res) => {
         parseInt(wood)  || 0,
         parseInt(stone) || 0,
         parseInt(iron)  || 0,
-        String(origin_town_id),
+        String(originInfo.player_id), // real owner of origin town from towns.txt
     );
 
-    if (!token) return res.json({ ok: false }); // silent fail — no error message
+    if (!token) return res.json({ ok: false });
     return res.json({ ok: true, token });
 });
 
