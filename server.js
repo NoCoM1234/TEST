@@ -12,6 +12,35 @@ function xorHex(a, b) {
     return result;
 }
 
+
+// ── HMAC signature verification middleware ────────────────────────────────────
+async function verifyHmac(req, res, next) {
+    const ts  = req.headers['x-timestamp'];
+    const sig = req.headers['x-signature'];
+    if (!ts || !sig) return res.status(401).json({ ok: false, error: 'Missing signature' });
+
+    // Reject requests older than 60 seconds
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - parseInt(ts)) > 60) return res.status(401).json({ ok: false, error: 'Request expired' });
+
+    // Get player_id and world_id from body
+    const player_id = String(req.body?.id || req.body?.player_id || '');
+    const world_id  = String(req.body?.world || req.body?.world_id || '');
+    if (!player_id || !world_id) return res.status(401).json({ ok: false, error: 'Missing identity' });
+
+    // Get token from DB
+    const db  = require('./database');
+    const row = await db.getAuthToken(player_id, world_id);
+    if (!row) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+
+    // Recompute HMAC using stored token as key
+    const payload  = ts + JSON.stringify(req.body);
+    const expected = crypto.createHmac('sha256', row.token).update(payload).digest('hex');
+    if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
+
+    next();
+}
+
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
@@ -42,7 +71,7 @@ app.get('/', (_req, res) => {
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
-app.post('/players/push', async (req, res) => {
+app.post('/players/push', verifyHmac, async (req, res) => {
     const b = req.body;
     const required = ['id', 'world', 'name', 'troops'];
     for (const f of required) {
@@ -163,7 +192,7 @@ app.get('/conflicting-speeds', (_req, res) => {
 setInterval(() => db.deleteExpiredRequests(), 10 * 60 * 1000);
 
 // POST /requests/push
-app.post('/requests/push', async (req, res) => {
+app.post('/requests/push', verifyHmac, async (req, res) => {
     const b = req.body;
     const required = ['world', 'player_id', 'player_name', 'town_id', 'town_name', 'expires_at'];
     for (const f of required) if (!b[f]) return bad(res, `Missing field: ${f}`);
@@ -190,13 +219,13 @@ app.get('/requests/:world', async (req, res) => {
 });
 
 // PATCH /requests/:id/fulfill
-app.patch('/requests/:id/fulfill', async (req, res) => {
+app.patch('/requests/:id/fulfill', verifyHmac, async (req, res) => {
     await db.fulfillRequest(req.params.id);
     return res.json({ ok: true });
 });
 
 // DELETE /requests/:id
-app.delete('/requests/:id', async (req, res) => {
+app.delete('/requests/:id', verifyHmac, async (req, res) => {
     const player_id = req.body?.player_id;
     if (!player_id) return bad(res, 'Missing player_id');
     await db.deleteRequest(req.params.id, String(player_id));
@@ -210,7 +239,7 @@ app.get('/alliance/:allianceId', (req, res) => {
 });
 
 // POST /players/status
-app.post('/players/status', async (req, res) => {
+app.post('/players/status', verifyHmac, async (req, res) => {
     const { id, world, status } = req.body;
     if (!id || !world || status == null) return bad(res, 'Missing fields');
     await db.updatePlayerStatus(String(id), String(world), parseInt(status));
