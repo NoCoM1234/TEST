@@ -30,14 +30,19 @@ try {
     console.log('[DB] Migrated: added towns_data column');
 } catch (_) { /* column already exists — ignore */ }
 
+try {
+    db.exec(`ALTER TABLE players ADD COLUMN status INTEGER NOT NULL DEFAULT 3;`);
+    console.log('[DB] Migrated: added status column');
+} catch (_) { /* column already exists — ignore */ }
+
 const stmts = {
     upsert: db.prepare(`
         INSERT INTO players
             (id, world, name, alliance, cultural_level,
-             town_count, current_cp, next_level_cp, troops, towns_data, pushed_at)
+             town_count, current_cp, next_level_cp, troops, towns_data, status, pushed_at)
         VALUES
             (@id, @world, @name, @alliance, @cultural_level,
-             @town_count, @current_cp, @next_level_cp, @troops, @towns_data, strftime('%s','now'))
+             @town_count, @current_cp, @next_level_cp, @troops, @towns_data, @status, strftime('%s','now'))
         ON CONFLICT(id, world) DO UPDATE SET
             name           = excluded.name,
             alliance       = excluded.alliance,
@@ -47,12 +52,13 @@ const stmts = {
             next_level_cp  = excluded.next_level_cp,
             troops         = excluded.troops,
             towns_data     = excluded.towns_data,
+            status         = excluded.status,
             pushed_at      = excluded.pushed_at
     `),
 
     getByWorld: db.prepare(`
         SELECT id, name, alliance, cultural_level,
-               town_count, current_cp, next_level_cp, troops, towns_data, pushed_at
+               town_count, current_cp, next_level_cp, troops, towns_data, status, pushed_at
         FROM players
         WHERE world = ?
         ORDER BY name ASC
