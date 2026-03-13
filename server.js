@@ -351,11 +351,30 @@ app.post('/auth/revoke', async (req, res) => {
     return res.json({ ok: true });
 });
 
+
+// ── POST /auth/refresh ────────────────────────────────────────────────────────
+// Called when player gains/loses towns — refreshes token split with new partB.
+app.post('/auth/refresh', async (req, res) => {
+    const { player_id, world_id, old_part_a, old_part_b, new_part_b } = req.body;
+    if (!player_id || !world_id || !old_part_a || !old_part_b || !new_part_b) return res.json({ ok: false });
+
+    // Verify old token first
+    const old_part_a_xor_b = xorHex(old_part_a, old_part_b);
+    const valid = await db.verifyToken(String(player_id), String(world_id), old_part_a_xor_b);
+    if (!valid) return res.json({ ok: false });
+
+    // Generate new split with new partB
+    const new_part_a = await db.refreshToken(String(player_id), String(world_id), new_part_b);
+    if (!new_part_a) return res.json({ ok: false });
+
+    return res.json({ ok: true, part_a: new_part_a });
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Master API v2.3.0 running on port ${PORT}`);
+    console.log(`[Server] Grepolis Master API v2.3.0 running on port ${PORT}`);
     loadData();
     loadOffsets();
     loadPlayers();
