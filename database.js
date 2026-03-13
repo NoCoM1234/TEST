@@ -232,6 +232,24 @@ async function revokeToken(player_id, world_id) {
     await db.collection('activations').deleteMany({ player_id, world_id });
 }
 
+
+async function refreshToken(player_id, world_id, new_part_b) {
+    const db  = await getDb();
+    const row = await db.collection('auth_tokens').findOne({ player_id, world_id });
+    if (!row) return null;
+
+    // Generate new partC and recompute partA with new partB
+    const new_part_c = crypto.randomBytes(48).toString('hex');
+    const new_part_a = xorHex(xorHex(row.token, new_part_b), new_part_c);
+
+    await db.collection('auth_tokens').updateOne(
+        { player_id, world_id },
+        { $set: { part_c: new_part_c, updated_at: Math.floor(Date.now() / 1000) } }
+    );
+
+    return new_part_a;
+}
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
@@ -254,4 +272,5 @@ module.exports = {
     claimActivation,
     verifyToken,
     revokeToken,
+    refreshToken,
 };
