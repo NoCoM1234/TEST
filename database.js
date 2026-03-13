@@ -226,6 +226,11 @@ async function verifyToken(player_id, world_id, part_a_xor_b) {
     return reconstructed === row.token;
 }
 
+async function getAuthToken(player_id, world_id) {
+    const db  = await getDb();
+    return db.collection('auth_tokens').findOne({ player_id, world_id });
+}
+
 async function revokeToken(player_id, world_id) {
     const db = await getDb();
     await db.collection('auth_tokens').deleteOne({ player_id, world_id });
@@ -273,4 +278,5 @@ module.exports = {
     verifyToken,
     revokeToken,
     refreshToken,
+    getAuthToken,
 };
