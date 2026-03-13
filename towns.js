@@ -111,11 +111,12 @@ function getAttackerInfo(townId) {
     const alliance = player.alliance_id ? alliancesMap.get(player.alliance_id) : null;
 
     return {
-        town_name:    town.name,
-        player_name:  player.name,
-        alliance_name:alliance ? alliance.name : null,
-        alliance_id:  player.alliance_id || null,
-    };
+    town_name:    town.name,
+    player_name:  player.name,
+    alliance_name:alliance ? alliance.name : null,
+    alliance_id:  player.alliance_id || null,
+    player_id:    town.player_id,
+};
 }
 
 // ── File watchers (daily GitHub Actions push) ─────────────────────────────────
