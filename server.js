@@ -7,7 +7,12 @@ const { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, lo
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+}));
+app.options('*', cors());
 app.use(express.json({ limit: '10mb' }));
 app.use((req, _res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
