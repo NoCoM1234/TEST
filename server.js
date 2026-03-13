@@ -33,16 +33,21 @@ async function verifyHmac(req, res, next) {
     const row = await db.getAuthToken(player_id, world_id);
     if (!row) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    // Verify X-Token is legitimate: partA XOR partB XOR partC must equal token
+    // Verify X-Token: server computes token XOR partC which must equal partA XOR partB
     const part_axorb = req.headers['x-token'];
     if (!part_axorb) return res.status(401).json({ ok: false, error: 'Missing token header' });
-    const reconstructed = xorHex(part_axorb, row.part_c);
-    if (reconstructed !== row.token) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    const server_axorb = xorHex(row.token, row.part_c);
+    console.log('[HMAC] client x-token:', part_axorb.substring(0, 16));
+    console.log('[HMAC] server axorb:  ', server_axorb.substring(0, 16));
+    console.log('[HMAC] token match:', server_axorb === part_axorb);
+    if (server_axorb !== part_axorb) return res.status(401).json({ ok: false, error: 'Invalid token' });
 
-    // Derive signing key same way as client: HMAC-SHA256(partAxorB, 'sign')
-    const signingKey = crypto.createHmac('sha256', 'sign').update(part_axorb).digest('hex');
-    const payload    = ts + (req.rawBody || JSON.stringify(req.body));
-    const expected   = crypto.createHmac('sha256', signingKey).update(payload).digest('hex');
+    // Both sides use part_axorb as the HMAC signing key
+    const payload  = ts + (req.rawBody || JSON.stringify(req.body));
+    const expected = crypto.createHmac('sha256', part_axorb).update(payload).digest('hex');
+    console.log('[HMAC] expected sig:', expected.substring(0, 16));
+    console.log('[HMAC] received sig:', sig.substring(0, 16));
+    console.log('[HMAC] sig match:', expected === sig);
     if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
 
     next();
