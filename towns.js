@@ -125,4 +125,11 @@ fs.watch(PLAYERS_PATH,   () => { console.log('[Towns] C updated'); playersMap   
 fs.watch(ALLIANCES_PATH, () => { console.log('[Towns] D updated'); alliancesMap = null; });
 fs.watch(OFFSETS_PATH,   () => { console.log('[Towns] offsets updated'); offsetsMap = null; });
 
-module.exports = { getTownData, getAttackerInfo, loadData, loadOffsets, loadPlayers, loadAlliances };
+
+function getAllianceById(allianceId) {
+    if (!alliancesMap) loadAlliances();
+    const a = alliancesMap.get(String(allianceId));
+    return a ? a.name : null;
+}
+
+module.exports = { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, loadPlayers, loadAlliances };
