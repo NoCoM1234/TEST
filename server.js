@@ -24,7 +24,7 @@ app.get('/', (_req, res) => {
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
-app.post('/players/push', (req, res) => {
+app.post('/players/push', async (req, res) => {
     const b = req.body;
     const required = ['id', 'world', 'name', 'troops'];
     for (const f of required) {
@@ -32,7 +32,7 @@ app.post('/players/push', (req, res) => {
     }
     let townsData = b.towns_data || '[]';
     if (Array.isArray(townsData)) townsData = JSON.stringify(townsData);
-    db.upsertPlayer({
+    await db.upsertPlayer({
         id:            String(b.id),
         world:         String(b.world),
         name:          b.name,
@@ -49,11 +49,11 @@ app.post('/players/push', (req, res) => {
 });
 
 // ── GET /players/:world ───────────────────────────────────────────────────────
-app.get('/players/:world', (req, res) => {
-    const rows = db.getPlayersByWorld(req.params.world);
+app.get('/players/:world', async (req, res) => {
+    const rows = await db.getPlayersByWorld(req.params.world);
     const now  = Math.floor(Date.now() / 1000);
     const players = rows.map(({ towns_data, ...rest }) => {
-        // If status hasn't been updated in 1,5 minutes → offline
+        // If status hasn't been updated in 3 minutes → offline
         if (now - (rest.status_at || 0) > 90) rest.status = 3;
         delete rest.status_at;
         return rest;
@@ -62,9 +62,9 @@ app.get('/players/:world', (req, res) => {
 });
 
 // ── GET /players/:world/:playerId/towns ───────────────────────────────────────
-app.get('/players/:world/:playerId/towns', (req, res) => {
+app.get('/players/:world/:playerId/towns', async (req, res) => {
     const { world, playerId } = req.params;
-    const towns = db.getPlayerTowns(world, playerId);
+    const towns = await db.getPlayerTowns(world, playerId);
     if (towns === null) return res.status(404).json({ ok: false, error: 'Player not found' });
     return res.json({ ok: true, towns });
 });
@@ -142,15 +142,15 @@ app.get('/conflicting-speeds', (_req, res) => {
     res.send(conflictingSpeedsCache);
 });
 // Clean expired requests every 10 minutes
-setInterval(db.deleteExpiredRequests, 10 * 60 * 1000);
+setInterval(() => db.deleteExpiredRequests(), 10 * 60 * 1000);
 
 // POST /requests/push
-app.post('/requests/push', (req, res) => {
+app.post('/requests/push', async (req, res) => {
     const b = req.body;
     const required = ['world', 'player_id', 'player_name', 'town_id', 'town_name', 'expires_at'];
     for (const f of required) if (!b[f]) return bad(res, `Missing field: ${f}`);
     if (!b.wood && !b.stone && !b.iron) return bad(res, 'At least one resource must be > 0');
-    const result = db.pushRequest({
+    const result = await db.pushRequest({
         world:         String(b.world),
         player_id:     String(b.player_id),
         player_name:   b.player_name,
@@ -162,26 +162,26 @@ app.post('/requests/push', (req, res) => {
         iron:          parseInt(b.iron)  || 0,
         expires_at:    parseInt(b.expires_at),
     });
-    return res.json({ ok: true, id: result.lastInsertRowid });
+    return res.json({ ok: true, id: result.lastInsertId });
 });
 
 // GET /requests/:world
-app.get('/requests/:world', (req, res) => {
-    const rows = db.getRequests(req.params.world);
+app.get('/requests/:world', async (req, res) => {
+    const rows = await db.getRequests(req.params.world);
     return res.json({ ok: true, requests: rows });
 });
 
 // PATCH /requests/:id/fulfill
-app.patch('/requests/:id/fulfill', (req, res) => {
-    db.fulfillRequest(req.params.id);
+app.patch('/requests/:id/fulfill', async (req, res) => {
+    await db.fulfillRequest(req.params.id);
     return res.json({ ok: true });
 });
 
 // DELETE /requests/:id
-app.delete('/requests/:id', (req, res) => {
+app.delete('/requests/:id', async (req, res) => {
     const player_id = req.body?.player_id;
     if (!player_id) return bad(res, 'Missing player_id');
-    db.deleteRequest(req.params.id, String(player_id));
+    await db.deleteRequest(req.params.id, String(player_id));
     return res.json({ ok: true });
 });
 
@@ -192,10 +192,10 @@ app.get('/alliance/:allianceId', (req, res) => {
 });
 
 // POST /players/status
-app.post('/players/status', (req, res) => {
+app.post('/players/status', async (req, res) => {
     const { id, world, status } = req.body;
     if (!id || !world || status == null) return bad(res, 'Missing fields');
-    db.updatePlayerStatus(String(id), String(world), parseInt(status));
+    await db.updatePlayerStatus(String(id), String(world), parseInt(status));
     return res.json({ ok: true });
 });
 
