@@ -17,10 +17,6 @@ function xorHex(a, b) {
 async function verifyHmac(req, res, next) {
     const ts  = req.headers['x-timestamp'];
     const sig = req.headers['x-signature'];
-    console.log('[HMAC] ts:', ts);
-console.log('[HMAC] rawBody length:', req.rawBody?.length);
-console.log('[HMAC] rawBody preview:', req.rawBody?.substring(0, 50));
-console.log('[HMAC] received:', sig);
     if (!ts || !sig) return res.status(401).json({ ok: false, error: 'Missing signature' });
 
     // Reject requests older than 60 seconds
@@ -37,13 +33,16 @@ console.log('[HMAC] received:', sig);
     const row = await db.getAuthToken(player_id, world_id);
     if (!row) return res.status(401).json({ ok: false, error: 'Unauthorized' });
 
-    // Reconstruct key using X-Token header XOR partC
+    // Verify X-Token is legitimate: partA XOR partB XOR partC must equal token
     const part_axorb = req.headers['x-token'];
     if (!part_axorb) return res.status(401).json({ ok: false, error: 'Missing token header' });
-    const key      = xorHex(part_axorb, row.part_c);
-    const payload  = ts + (req.rawBody || JSON.stringify(req.body));
-    const expected = crypto.createHmac('sha256', key).update(payload).digest('hex');
-    console.log('[HMAC] expected:', expected);
+    const reconstructed = xorHex(part_axorb, row.part_c);
+    if (reconstructed !== row.token) return res.status(401).json({ ok: false, error: 'Invalid token' });
+
+    // Derive signing key same way as client: HMAC-SHA256(partAxorB, 'sign')
+    const signingKey = crypto.createHmac('sha256', 'sign').update(part_axorb).digest('hex');
+    const payload    = ts + (req.rawBody || JSON.stringify(req.body));
+    const expected   = crypto.createHmac('sha256', signingKey).update(payload).digest('hex');
     if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
 
     next();
