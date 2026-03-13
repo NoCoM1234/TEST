@@ -53,8 +53,8 @@ app.get('/players/:world', (req, res) => {
     const rows = db.getPlayersByWorld(req.params.world);
     const now  = Math.floor(Date.now() / 1000);
     const players = rows.map(({ towns_data, ...rest }) => {
-        // If status hasn't been updated in 1 minutes → offline
-        if (now - (rest.status_at || 0) > 60) rest.status = 3;
+        // If status hasn't been updated in 1,5 minutes → offline
+        if (now - (rest.status_at || 0) > 90) rest.status = 3;
         delete rest.status_at;
         return rest;
     });
