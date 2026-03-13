@@ -25,7 +25,6 @@ db.exec(`
     );
 `);
 
-// Migration: add towns_data column if it doesn't exist yet (for existing DBs)
 try {
     db.exec(`ALTER TABLE players ADD COLUMN towns_data TEXT NOT NULL DEFAULT '[]';`);
     console.log('[DB] Migrated: added towns_data column');
@@ -84,5 +83,51 @@ function cleanupStale() {
 
 setInterval(cleanupStale, 86400000);
 cleanupStale();
+db.exec(`
+    CREATE TABLE IF NOT EXISTS requests (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        world       TEXT    NOT NULL,
+        player_id   TEXT    NOT NULL,
+        player_name TEXT    NOT NULL,
+        alliance_name TEXT  DEFAULT '',
+        town_id     TEXT    NOT NULL,
+        town_name   TEXT    NOT NULL,
+        wood        INTEGER DEFAULT 0,
+        stone       INTEGER DEFAULT 0,
+        iron        INTEGER DEFAULT 0,
+        expires_at  INTEGER NOT NULL,
+        fulfilled   INTEGER DEFAULT 0,
+        created_at  INTEGER NOT NULL
+    )
+`);
+function pushRequest(data) {
+    const stmt = db.prepare(`
+        INSERT INTO requests (world, player_id, player_name, alliance_name, town_id, town_name, wood, stone, iron, expires_at, fulfilled, created_at)
+        VALUES (@world, @player_id, @player_name, @alliance_name, @town_id, @town_name, @wood, @stone, @iron, @expires_at, 0, @created_at)
+    `);
+    return stmt.run({ ...data, created_at: Math.floor(Date.now() / 1000) });
+}
 
-module.exports = { upsertPlayer, getPlayersByWorld, getPlayerTowns };
+function getRequests(world) {
+    const now = Math.floor(Date.now() / 1000);
+    return db.prepare(`
+        SELECT * FROM requests
+        WHERE world = ? AND expires_at > ?
+        ORDER BY created_at DESC
+    `).all(world, now);
+}
+
+function fulfillRequest(id) {
+    return db.prepare(`UPDATE requests SET fulfilled = 1 WHERE id = ?`).run(id);
+}
+
+function deleteRequest(id, player_id) {
+    return db.prepare(`DELETE FROM requests WHERE id = ? AND player_id = ?`).run(id, player_id);
+}
+
+function deleteExpiredRequests() {
+    const now = Math.floor(Date.now() / 1000);
+    return db.prepare(`DELETE FROM requests WHERE expires_at <= ?`).run(now);
+}
+
+module.exports = { upsertPlayer, getPlayersByWorld, getPlayerTowns, pushRequest, getRequests, fulfillRequest, deleteRequest, deleteExpiredRequests };
