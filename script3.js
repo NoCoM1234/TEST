@@ -7571,31 +7571,37 @@ function authComputeAndSavePartB() {
     console.log('%c[AttackNotif] Running ✓', 'color: lime; font-weight: bold;');
 };
 
-    // ══════════════════════════════════════════════════════════════
+     // ══════════════════════════════════════════════════════════════
     //  GAME LOAD — wire everything up
     // ══════════════════════════════════════════════════════════════
 
-    (async function () {
-    'use strict';
-    addMasterConfigButton();
-    notifInit();
-    setTimeout(async () => {
-        updateCycleDelaysBasedOnSpeed();
-        updateFestivalEligibleTowns();
-        alPushData().catch(() => {});
-        masterLoop();
-        masterHideTradeLoop();
-        masterAutoTroopLoop();
-        if (FARM_CONFIG.useFarm)         runFarmCollector();
-        if (FARM_CONFIG.upgradeVillages) runVillageUpgrader();
-        runAutoCultureLoop();
-        startSleepSchedule();
-        startAutoReload();
-        reqFetch();
-        setInterval(reqFetch, 60 * 1000);
-        setTimeout(navPrefetchCoords, 5000);
-        setInterval(navWatchTowns, 8 * 60 * 60 * 1000);
-        setInterval(alPushStatus, 60 * 1000);
-console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
-})()
-})()
+    uw.$.Observer(uw.GameEvents.game.load).subscribe(() => {
+        addMasterConfigButton();
+                    notifInit();
+        setTimeout(() => {
+            updateCycleDelaysBasedOnSpeed();
+            updateFestivalEligibleTowns();
+
+            alPushData().catch(() => {});
+
+            masterLoop();
+            masterHideTradeLoop();
+            masterAutoTroopLoop();
+
+            if (FARM_CONFIG.useFarm)         runFarmCollector();
+            if (FARM_CONFIG.upgradeVillages) runVillageUpgrader();
+
+            runAutoCultureLoop();
+            startSleepSchedule();
+            startAutoReload();
+            reqFetch(); // initial load on game start
+            setInterval(reqFetch, 60 * 1000); // always refresh in background
+            setTimeout(navPrefetchCoords, 5000);
+            setInterval(navWatchTowns, 8 * 60 * 60 * 1000); // every 8 hours
+            setInterval(alPushStatus, 60 * 1000);
+        }, 20000);
+    });
+
+    console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
+
+})();
