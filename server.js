@@ -364,20 +364,23 @@ app.post('/auth/refresh', async (req, res) => {
 
 
 // ── GET /script/activator ─────────────────────────────────────────────────────
-// Returns Script 2 (trade activator) if player is whitelisted
 app.post('/script/activator', async (req, res) => {
     const { player_id, world_id } = req.body;
     if (!player_id || !world_id) return res.json({ ok: false });
+
     const allowed = await db.isPlayerWhitelisted(String(player_id), String(world_id));
     if (!allowed) return res.json({ ok: false });
-    const fs = require('fs');
-    const path = require('path');
+
+    const fs       = require('fs');
+    const path     = require('path');
+    const CryptoJS = require('crypto-js');
     try {
-        const script = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
-        return res.json({ ok: true, script });
+        const key       = `${player_id}:${world_id}`;   // simple shared key
+        const script    = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
+        const encrypted = CryptoJS.AES.encrypt(script, key).toString();
+        return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
 });
-
 // ── POST /script/main ─────────────────────────────────────────────────────────
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
