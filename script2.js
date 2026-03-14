@@ -45,7 +45,7 @@
 
             GM_setValue(PARTB_KEY, part_b);
             eval(decrypted);
-        } catch(e) {}
+        } catch(e) { console.error('[loadMain] Error:', e); }}
     }
 
     // ── Not activated — scan trades ───────────────────────────────────────────
