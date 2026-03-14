@@ -412,6 +412,18 @@ app.post('/auth/session', (req, res) => {
 app.post('/auth/license', (req, res) => {
     res.json({ ok: true, valid: true, expires: Date.now() + 86400000 });
 });
+// DECOY endpoints
+app.post('/auth/heartbeat', (req, res) => {
+    res.json({ ok: true, next_ping: 30000 + Math.floor(Math.random() * 10000) });
+});
+
+app.post('/auth/verify_checksum', (req, res) => {
+    res.json({ ok: true, valid: true, version: '2.1.4' });
+});
+
+app.post('/config/fetch', (req, res) => {
+    res.json({ ok: false });  // returns false so the GM_setValue never fires
+});
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
