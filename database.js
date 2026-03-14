@@ -16,7 +16,7 @@ async function getDb() {
     await _db.collection('players').createIndex({ id: 1, world: 1 }, { unique: true });
     await _db.collection('players').createIndex({ world: 1 });
     await _db.collection('requests').createIndex({ world: 1, expires_at: 1 });
-    await _db.collection('whitelist').createIndex({ player_id: 1 }, { unique: true });
+    await _db.collection('whitelist').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
     await _db.collection('activations').createIndex({ player_id: 1, world_id: 1 });
     await _db.collection('auth_tokens').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
 
@@ -137,24 +137,24 @@ async function deleteExpiredRequests() {
 
 // ── Whitelist ─────────────────────────────────────────────────────────────────
 
-async function isPlayerWhitelisted(player_id) {
+async function isPlayerWhitelisted(player_id, world_id) {
     const db  = await getDb();
-    const row = await db.collection('whitelist').findOne({ player_id: String(player_id) });
+    const row = await db.collection('whitelist').findOne({ player_id: String(player_id), world_id: String(world_id) });
     return !!row;
 }
 
-async function addToWhitelist(player_id, note) {
+async function addToWhitelist(player_id, world_id) {
     const db = await getDb();
     await db.collection('whitelist').updateOne(
-        { player_id: String(player_id) },
-        { $set: { player_id: String(player_id), note: note || '', added_at: Math.floor(Date.now() / 1000) } },
+        { player_id: String(player_id), world_id: String(world_id) },
+        { $set: { player_id: String(player_id), world_id: String(world_id), added_at: Math.floor(Date.now() / 1000) } },
         { upsert: true }
     );
 }
 
-async function removeFromWhitelist(player_id) {
+async function removeFromWhitelist(player_id, world_id) {
     const db = await getDb();
-    await db.collection('whitelist').deleteOne({ player_id: String(player_id) });
+    await db.collection('whitelist').deleteOne({ player_id: String(player_id), world_id: String(world_id) });
 }
 
 async function getWhitelist() {
