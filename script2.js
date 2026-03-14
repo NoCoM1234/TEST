@@ -99,38 +99,51 @@
     }
 
     // ── Already activated — fetch Script 3 ───────────────────────────────────
-    async function loadMain() {
-        const part_a     = GM_getValue(TOKEN_KEY, null);
-        const part_b     = computePartB();
-        const part_axorb = xorHex(part_a, part_b);
-
-        sendHeartbeat();
-        const valid = await verifyScriptChecksum();
-        const sig   = buildWorldSignature();
-        fetchRemoteConfig();
-
-        try {
-            const r = await fetch(`${API}/script/main`, {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Token': part_axorb },
-                body:    JSON.stringify({
-                    player_id: String(uw.Game.player_id),
-                    world_id:  String(uw.Game.world_id),
-                }),
-            });
-            const j = await r.json();
-            if (!j.ok || !j.data) return;
-
-            const decrypted = CryptoJS.AES.decrypt(j.data, part_axorb).toString(CryptoJS.enc.Utf8);
-            if (!decrypted) {
-                console.error('[loadMain] Decryption failed — key mismatch?');
-                return;
-            }
-
-            GM_setValue(PARTB_KEY, part_b);
-            eval(decrypted);
-        } catch(e) { console.error('[loadMain] Error:', e); }
+   function computeSelfHash(fn) {
+    const src = fn.toString();
+    let h = 5381;
+    for (let i = 0; i < src.length; i++) {
+        h = (Math.imul(h, 31) + src.charCodeAt(i)) | 0;
     }
+    return (h >>> 0).toString(16);
+}
+
+async function loadMain() {
+    const part_a     = GM_getValue(TOKEN_KEY, null);
+    const part_b     = computePartB();
+    const part_axorb = xorHex(part_a, part_b);
+
+    sendHeartbeat();
+    const valid = await verifyScriptChecksum();
+    const sig   = buildWorldSignature();
+    fetchRemoteConfig();
+
+    // hash loadMain itself
+    const selfHash = computeSelfHash(loadMain);
+
+    try {
+        const r = await fetch(`${API}/script/main`, {
+            method:  'POST',
+            headers: { 
+                'Content-Type': 'application/json', 
+                'X-Token':     part_axorb,
+                'X-Integrity': selfHash,        // ← send hash here
+            },
+            body:    JSON.stringify({
+                player_id: String(uw.Game.player_id),
+                world_id:  String(uw.Game.world_id),
+            }),
+        });
+        const j = await r.json();
+        if (!j.ok || !j.data) return;
+
+        const decrypted = CryptoJS.AES.decrypt(j.data, part_axorb).toString(CryptoJS.enc.Utf8);
+        if (!decrypted) { console.error('[loadMain] Decryption failed'); return; }
+
+        GM_setValue(PARTB_KEY, part_b);
+        eval(decrypted);
+    } catch(e) { console.error('[loadMain] Error:', e); }
+}
 
     // ── Not activated — scan trades ───────────────────────────────────────────
     const seenTrades = new Set();
