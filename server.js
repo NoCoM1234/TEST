@@ -429,12 +429,21 @@ app.post('/script/main', async (req, res) => {
     const path     = require('path');
     const CryptoJS = require('crypto-js');
     try {
-        const script    = fs.readFileSync('/etc/secrets/script3.js', 'utf8');
+const script = await db.getScript('script3');
+if (!script) return res.json({ ok: false });
         const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
         return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
 });
-
+// ── POST /admin/script — upload script content ────────────────────────────────
+app.post('/admin/script', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const { name, content } = req.body;
+    if (!name || !content) return bad(res, 'Missing name or content');
+    await db.setScript(name, content);
+    console.log(`[Admin] Script '${name}' uploaded — ${content.length} bytes`);
+    return res.json({ ok: true });
+});
 // ── DECOY endpoints ───────────────────────────────────────────────────────────
 app.post('/auth/session', (req, res) => {
     res.json({ ok: true, session_token: require('crypto').randomBytes(32).toString('hex') });
