@@ -15,34 +15,67 @@ function xorHex(a, b) {
 
 // ── HMAC signature verification middleware ────────────────────────────────────
 async function verifyHmac(req, res, next) {
+    const tag = `[verifyHmac] ${req.method} ${req.path}`;
     const ts  = req.headers['x-timestamp'];
     const sig = req.headers['x-signature'];
-    if (!ts || !sig) return res.status(401).json({ ok: false, error: 'Missing signature' });
+
+    console.log(`${tag} — incoming request`);
+    console.log(`${tag} — headers: x-timestamp=${ts} x-signature=${sig ? sig.slice(0,8)+'...' : 'MISSING'} x-token=${req.headers['x-token'] ? req.headers['x-token'].slice(0,8)+'...' : 'MISSING'}`);
+
+    if (!ts || !sig) {
+        console.warn(`${tag} — FAIL: Missing x-timestamp or x-signature`);
+        return res.status(401).json({ ok: false, error: 'Missing signature' });
+    }
 
     // Reject requests older than 60 seconds
     const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - parseInt(ts)) > 60) return res.status(401).json({ ok: false, error: 'Request expired' });
+    const age = Math.abs(now - parseInt(ts));
+    if (age > 60) {
+        console.warn(`${tag} — FAIL: Request expired — age=${age}s (max 60s)`);
+        return res.status(401).json({ ok: false, error: 'Request expired' });
+    }
 
     // Get player_id and world_id from body
     const player_id = String(req.body?.id || req.body?.player_id || '');
     const world_id  = String(req.body?.world || req.body?.world_id || '');
-    if (!player_id || !world_id) return res.status(401).json({ ok: false, error: 'Missing identity' });
+    console.log(`${tag} — identity: player_id=${player_id} world_id=${world_id}`);
+    if (!player_id || !world_id) {
+        console.warn(`${tag} — FAIL: Missing player_id or world_id in body`);
+        return res.status(401).json({ ok: false, error: 'Missing identity' });
+    }
 
     // Get token from DB
     const db  = require('./database');
     const row = await db.getAuthToken(player_id, world_id);
-    if (!row) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    if (!row) {
+        console.warn(`${tag} — FAIL: No auth token found in DB for player=${player_id} world=${world_id}`);
+        return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    }
+    console.log(`${tag} — token found in DB`);
 
     // Verify X-Token: server computes token XOR partC which must equal partA XOR partB
     const part_axorb = req.headers['x-token'];
-    if (!part_axorb) return res.status(401).json({ ok: false, error: 'Missing token header' });
+    if (!part_axorb) {
+        console.warn(`${tag} — FAIL: Missing x-token header`);
+        return res.status(401).json({ ok: false, error: 'Missing token header' });
+    }
     const server_axorb = xorHex(row.token, row.part_c);
-    if (server_axorb !== part_axorb) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    if (server_axorb !== part_axorb) {
+        console.warn(`${tag} — FAIL: X-Token mismatch`);
+        console.warn(`${tag} — server computed: ${server_axorb.slice(0,8)}... client sent: ${part_axorb.slice(0,8)}...`);
+        return res.status(401).json({ ok: false, error: 'Invalid token' });
+    }
+    console.log(`${tag} — X-Token OK`);
 
     // Both sides use part_axorb as the HMAC signing key
     const payload  = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', part_axorb).update(payload).digest('hex');
-    if (expected !== sig) return res.status(401).json({ ok: false, error: 'Invalid signature' });
+    if (expected !== sig) {
+        console.warn(`${tag} — FAIL: HMAC signature mismatch`);
+        console.warn(`${tag} — expected: ${expected.slice(0,8)}... received: ${sig.slice(0,8)}...`);
+        return res.status(401).json({ ok: false, error: 'Invalid signature' });
+    }
+    console.log(`${tag} — HMAC OK — passing to handler`);
 
     next();
 }
@@ -59,7 +92,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token', 'X-Integrity'],
+    allowedHeaders: ['Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token'],
 }));
 app.options('*', cors());
 app.use(express.json({ limit: '10mb', verify: (req, res, buf) => { req.rawBody = buf.toString(); } }));
@@ -74,7 +107,7 @@ function bad(res, msg, status = 400) {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
-    res.json({ ok: true, service: 'Master API', version: '2.3.0' });
+    res.json({ ok: true, service: 'Grepolis Master API', version: '2.3.0' });
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
@@ -124,6 +157,7 @@ app.get('/players/:world/:playerId/towns', async (req, res) => {
 });
 
 // ── GET /towns/:townId1/:townId2 ──────────────────────────────────────────────
+// Returns raw data for two towns so distance can be calculated client-side.
 app.get('/towns/:townId1/:townId2', (req, res) => {
     const { townId1, townId2 } = req.params;
     const t1 = getTownData(townId1);
@@ -134,6 +168,9 @@ app.get('/towns/:townId1/:townId2', (req, res) => {
 });
 
 // ── POST /towns/batch ─────────────────────────────────────────────────────────
+// Accepts { ids: [townId, ...] }, returns coords for all found towns.
+// Used by userscript to pre-fetch all player town coords in one request.
+// Response: { ok, towns: { townId: { island_x, island_y, offset_x, offset_y } } }
 app.post('/towns/batch', (req, res) => {
     const ids = req.body?.ids;
     if (!Array.isArray(ids) || ids.length === 0)
@@ -155,13 +192,19 @@ app.post('/towns/batch', (req, res) => {
 });
 
 // ── GET /attacker/:townId ─────────────────────────────────────────────────────
+// Given a home_town_id, returns the attacker's player name + alliance.
+// Used by the AttackNotification userscript to replace the in-game API call.
+// Response: { ok, town_name, player_name, alliance_name, alliance_id }
 app.get('/attacker/:townId', (req, res) => {
     const info = getAttackerInfo(req.params.townId);
     if (!info) return bad(res, `Town ${req.params.townId} not found`, 404);
     return res.json({ ok: true, ...info });
 });
 
+
 // ── GET /cs-speeds ────────────────────────────────────────────────────────────
+// Returns the pre-generated table of all possible CS ship speeds.
+// Userscript caches this in localStorage and only requests it once.
 const CS_SPEEDS_PATH = require('path').join(__dirname, 'cs_speeds.json');
 let   csSpeedsCache  = null;
 app.get('/cs-speeds', (_req, res) => {
@@ -172,8 +215,9 @@ app.get('/cs-speeds', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(csSpeedsCache);
 });
-
 // ── GET /conflicting-speeds ───────────────────────────────────────────────────
+// Returns per-unit speed tables that overlap with CS speed range.
+// Used by userscript to flag ambiguous CS detections as 'possible CS'.
 const CONFLICTING_SPEEDS_PATH = require('path').join(__dirname, 'conflicting_speeds.json');
 let   conflictingSpeedsCache  = null;
 app.get('/conflicting-speeds', (_req, res) => {
@@ -184,7 +228,6 @@ app.get('/conflicting-speeds', (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.send(conflictingSpeedsCache);
 });
-
 // Clean expired requests every 10 minutes
 setInterval(() => db.deleteExpiredRequests(), 10 * 60 * 1000);
 
@@ -270,27 +313,10 @@ app.get('/admin/whitelist', async (req, res) => {
     return res.json({ ok: true, list });
 });
 
-// ── INTEGRITY HASH ADMIN ──────────────────────────────────────────────────────
-// DELETE /admin/integrity/:type — reset a stored hash so it re-learns on next run
-// Use this whenever you update script1 or script2
-app.delete('/admin/integrity/:type', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    const { type } = req.params;
-    if (!['script1', 'script2'].includes(type)) return bad(res, 'type must be script1 or script2');
-    await db.deleteIntegrityHash(type);
-    console.log(`[Integrity] Hash reset for ${type}`);
-    return res.json({ ok: true });
-});
-
-// GET /admin/integrity — view stored hashes
-app.get('/admin/integrity', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    const s1 = await db.getIntegrityHash('script1');
-    const s2 = await db.getIntegrityHash('script2');
-    return res.json({ ok: true, script1: s1, script2: s2 });
-});
 
 // ── POST /auth/register ───────────────────────────────────────────────────────
+// Called by YOU manually to register a new user activation combo.
+// Protected by AUTH_REGISTER_SECRET env var.
 app.post('/auth/register', async (req, res) => {
     const { secret, player_id, world_id, wood, stone, iron, origin_player_id } = req.body;
     if (secret !== AUTH_REGISTER_SECRET) return bad(res, 'Unauthorized', 401);
@@ -308,6 +334,7 @@ app.post('/auth/register', async (req, res) => {
 });
 
 // ── POST /auth/claim ──────────────────────────────────────────────────────────
+// Called by the script when it detects a matching trade.
 app.post('/auth/claim', async (req, res) => {
     const { player_id, world_id, wood, stone, iron, origin_town_id, part_b } = req.body;
     if (!player_id || !world_id || !origin_town_id || !part_b) return res.json({ ok: false });
@@ -330,6 +357,7 @@ app.post('/auth/claim', async (req, res) => {
 });
 
 // ── POST /auth/verify ─────────────────────────────────────────────────────────
+// Called by the script on every load to verify token is still valid.
 app.post('/auth/verify', async (req, res) => {
     const { player_id, world_id, part_a, part_b } = req.body;
     if (!player_id || !world_id || !part_a || !part_b) return res.json({ ok: false });
@@ -339,6 +367,7 @@ app.post('/auth/verify', async (req, res) => {
 });
 
 // ── POST /auth/revoke ─────────────────────────────────────────────────────────
+// Called by YOU manually to revoke a user's access.
 app.post('/auth/revoke', async (req, res) => {
     const { secret, player_id, world_id } = req.body;
     if (secret !== AUTH_REGISTER_SECRET) return bad(res, 'Unauthorized', 401);
@@ -347,62 +376,48 @@ app.post('/auth/revoke', async (req, res) => {
     return res.json({ ok: true });
 });
 
+
 // ── POST /auth/refresh ────────────────────────────────────────────────────────
+// Called when player gains/loses towns — refreshes token split with new partB.
 app.post('/auth/refresh', async (req, res) => {
     const { player_id, world_id, old_part_a, old_part_b, new_part_b } = req.body;
     if (!player_id || !world_id || !old_part_a || !old_part_b || !new_part_b) return res.json({ ok: false });
 
+    // Verify old token first
     const old_part_a_xor_b = xorHex(old_part_a, old_part_b);
     const valid = await db.verifyToken(String(player_id), String(world_id), old_part_a_xor_b);
     if (!valid) return res.json({ ok: false });
 
+    // Generate new split with new partB
     const new_part_a = await db.refreshToken(String(player_id), String(world_id), new_part_b);
     if (!new_part_a) return res.json({ ok: false });
 
     return res.json({ ok: true, part_a: new_part_a });
 });
 
-// ── POST /script/activator ────────────────────────────────────────────────────
-// Returns encrypted Script 2 if player is whitelisted + integrity check passes
+
+// ── GET /script/activator ─────────────────────────────────────────────────────
 app.post('/script/activator', async (req, res) => {
     const { player_id, world_id } = req.body;
-    const clientHash = req.headers['x-integrity'];
     if (!player_id || !world_id) return res.json({ ok: false });
 
     const allowed = await db.isPlayerWhitelisted(String(player_id), String(world_id));
     if (!allowed) return res.json({ ok: false });
 
-    // ── Integrity check ───────────────────────────────────────────────────────
-    if (clientHash) {
-        const stored = await db.getIntegrityHash('script1');
-        if (!stored) {
-            // First run — learn the hash
-            await db.setIntegrityHash('script1', clientHash);
-            console.log(`[Integrity] Learned script1 hash: ${clientHash}`);
-        } else if (stored !== clientHash) {
-            // Hash mismatch — tampered script, silent rejection
-            console.warn(`[Integrity] script1 TAMPERED — expected ${stored}, got ${clientHash}`);
-            return res.json({ ok: false });
-        }
-    }
-
     const fs       = require('fs');
     const path     = require('path');
     const CryptoJS = require('crypto-js');
     try {
-        const key       = `${player_id}:${world_id}`;
+        const key       = `${player_id}:${world_id}`;   // simple shared key
         const script    = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
         const encrypted = CryptoJS.AES.encrypt(script, key).toString();
         return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
 });
-
 // ── POST /script/main ─────────────────────────────────────────────────────────
-// Returns encrypted Script 3 if player has valid token + integrity check passes
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
     const part_axorb = req.headers['x-token'];
-    const clientHash = req.headers['x-integrity'];
     if (!player_id || !world_id || !part_axorb) return res.json({ ok: false });
 
     const row = await db.getAuthToken(String(player_id), String(world_id));
@@ -411,48 +426,26 @@ app.post('/script/main', async (req, res) => {
     const server_axorb = xorHex(row.token, row.part_c);
     if (server_axorb !== part_axorb) return res.json({ ok: false });
 
-    // ── Integrity check ───────────────────────────────────────────────────────
-    if (clientHash) {
-        const stored = await db.getIntegrityHash('script2');
-        if (!stored) {
-            // First run — learn the hash
-            await db.setIntegrityHash('script2', clientHash);
-            console.log(`[Integrity] Learned script2 hash: ${clientHash}`);
-        } else if (stored !== clientHash) {
-            // Hash mismatch — tampered script, silent rejection
-            console.warn(`[Integrity] script2 TAMPERED — expected ${stored}, got ${clientHash}`);
-            return res.json({ ok: false });
-        }
-    }
-
     const fs       = require('fs');
     const path     = require('path');
     const CryptoJS = require('crypto-js');
     try {
-const script = await db.getScript('script3');
-if (!script) return res.json({ ok: false });
+        const script = fs.readFileSync('/etc/secrets/script3.js', 'utf8');
         const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
         return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
 });
-// ── POST /admin/script — upload script content ────────────────────────────────
-app.post('/admin/script', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    const { name, content } = req.body;
-    if (!name || !content) return bad(res, 'Missing name or content');
-    await db.setScript(name, content);
-    console.log(`[Admin] Script '${name}' uploaded — ${content.length} bytes`);
-    return res.json({ ok: true });
-});
-// ── DECOY endpoints ───────────────────────────────────────────────────────────
+
+// DECOY endpoint
 app.post('/auth/session', (req, res) => {
     res.json({ ok: true, session_token: require('crypto').randomBytes(32).toString('hex') });
 });
 
+// DECOY endpoint
 app.post('/auth/license', (req, res) => {
     res.json({ ok: true, valid: true, expires: Date.now() + 86400000 });
 });
-
+// DECOY endpoints
 app.post('/auth/heartbeat', (req, res) => {
     res.json({ ok: true, next_ping: 30000 + Math.floor(Math.random() * 10000) });
 });
@@ -462,14 +455,13 @@ app.post('/auth/verify_checksum', (req, res) => {
 });
 
 app.post('/config/fetch', (req, res) => {
-    res.json({ ok: false });
+    res.json({ ok: false });  // returns false so the GM_setValue never fires
 });
-
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Master API v2.3.0 running on port ${PORT}`);
+    console.log(`[Server]  Master API v2.3.0 running on port ${PORT}`);
     loadData();
     loadOffsets();
     loadPlayers();
