@@ -19,6 +19,7 @@ async function getDb() {
     await _db.collection('whitelist').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
     await _db.collection('activations').createIndex({ player_id: 1, world_id: 1 });
     await _db.collection('auth_tokens').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
+    await _db.collection('integrity_hashes').createIndex({ type: 1 }, { unique: true });
 
     return _db;
 }
@@ -237,7 +238,6 @@ async function revokeToken(player_id, world_id) {
     await db.collection('activations').deleteMany({ player_id, world_id });
 }
 
-
 async function refreshToken(player_id, world_id, new_part_b) {
     const db  = await getDb();
     const row = await db.collection('auth_tokens').findOne({ player_id, world_id });
@@ -253,6 +253,28 @@ async function refreshToken(player_id, world_id, new_part_b) {
     );
 
     return new_part_a;
+}
+
+// ── Integrity Hashes ──────────────────────────────────────────────────────────
+
+async function getIntegrityHash(type) {
+    const db  = await getDb();
+    const row = await db.collection('integrity_hashes').findOne({ type });
+    return row?.hash || null;
+}
+
+async function setIntegrityHash(type, hash) {
+    const db = await getDb();
+    await db.collection('integrity_hashes').updateOne(
+        { type },
+        { $set: { type, hash, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
+
+async function deleteIntegrityHash(type) {
+    const db = await getDb();
+    await db.collection('integrity_hashes').deleteOne({ type });
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
@@ -279,4 +301,7 @@ module.exports = {
     revokeToken,
     refreshToken,
     getAuthToken,
+    getIntegrityHash,
+    setIntegrityHash,
+    deleteIntegrityHash,
 };
