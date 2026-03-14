@@ -74,7 +74,7 @@ function bad(res, msg, status = 400) {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/', (_req, res) => {
-    res.json({ ok: true, service: 'Grepolis Master API', version: '2.3.0' });
+    res.json({ ok: true, service: 'Master API', version: '2.3.0' });
 });
 
 // ── POST /players/push ────────────────────────────────────────────────────────
