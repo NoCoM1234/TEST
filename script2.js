@@ -23,7 +23,7 @@
     }
 
     // ── Already activated — fetch Script 3 ───────────────────────────────────
-    async function loadMain() {
+async function loadMain() {
     const part_a     = GM_getValue(TOKEN_KEY, null);
     const part_b     = computePartB();
     const part_axorb = xorHex(part_a, part_b);
@@ -38,10 +38,16 @@
             }),
         });
         const j = await r.json();
-        if (!j.ok || !j.script) return;   // ← changed j.data to j.script
+        if (!j.ok || !j.data) return;
+
+        const decrypted = CryptoJS.AES.decrypt(j.data, part_axorb).toString(CryptoJS.enc.Utf8);
+        if (!decrypted) {
+            console.error('[loadMain] Decryption failed — key mismatch?');
+            return;
+        }
 
         GM_setValue(PARTB_KEY, part_b);
-        eval(j.script);                    // ← eval directly, no decryption
+        eval(decrypted);
     } catch(e) { console.error('[loadMain] Error:', e); }
 }
 
