@@ -1,16 +1,3 @@
-// ==UserScript==
-// @name        Master 2
-// @version      1.0
-// @description  All-in-one automation suite for Grepolis.
-// @author       PIO
-// @match        https://*.grepolis.com/game/*
-// @match        http://*.grepolis.com/game/*
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_deleteValue
-// @require      https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js
-// ==/UserScript==
-
 (function() {
 
     const API        = 'https://test-1i20.onrender.com';
