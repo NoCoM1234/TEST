@@ -47,6 +47,7 @@ async function verifyHmac(req, res, next) {
     next();
 }
 
+
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
@@ -252,73 +253,29 @@ app.post('/players/status', verifyHmac, async (req, res) => {
     return res.json({ ok: true });
 });
 
-// ── AUTH / WHITELIST ──────────────────────────────────────────────────────────
+// ── WHITELIST ADMIN ──────────────────────────────────────────────────────────
 
-// GET /auth/check/:playerId — called by userscript on load
-app.get('/auth/check/:playerId', async (req, res) => {
-    const allowed = await db.isPlayerWhitelisted(req.params.playerId);
-    // Always return 200 — don't hint why it failed
-    return res.json({ ok: allowed });
-});
-
-// GET /admin/whitelist — view all whitelisted players
-app.get('/admin/whitelist', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    const list = await db.getWhitelist();
-    return res.json({ ok: true, list });
-});
-
-// POST /admin/whitelist — add a player { player_id, note }
+// POST /admin/whitelist — add { player_id, world_id }
 app.post('/admin/whitelist', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    const { player_id, note } = req.body;
-    if (!player_id) return bad(res, 'Missing player_id');
-    await db.addToWhitelist(String(player_id), note || '');
+    const { player_id, world_id } = req.body;
+    if (!player_id || !world_id) return bad(res, 'Missing player_id or world_id');
+    await db.addToWhitelist(String(player_id), String(world_id));
     return res.json({ ok: true });
 });
 
-// DELETE /admin/whitelist/:playerId — remove a player
-app.delete('/admin/whitelist/:playerId', async (req, res) => {
+// DELETE /admin/whitelist — remove { player_id, world_id }
+app.delete('/admin/whitelist', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
-    await db.removeFromWhitelist(req.params.playerId);
+    const { player_id, world_id } = req.body;
+    if (!player_id || !world_id) return bad(res, 'Missing player_id or world_id');
+    await db.removeFromWhitelist(String(player_id), String(world_id));
     return res.json({ ok: true });
 });
 
-
-// ── AUTH / WHITELIST ──────────────────────────────────────────────────────────
-
-// GET /auth/check?player_id=xxx — called by userscript on load
-app.get('/auth/check', async (req, res) => {
-    const { player_id } = req.query;
-    if (!player_id) return bad(res, 'Missing player_id');
-    const allowed = await db.isPlayerWhitelisted(String(player_id));
-    return res.json({ ok: true, allowed });
-});
-
-// POST /auth/add — add a player to whitelist (admin only)
-// Body: { key, player_id, note? }
-app.post('/auth/add', async (req, res) => {
-    const { key, player_id, note } = req.body;
-    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
-    if (!player_id) return bad(res, 'Missing player_id');
-    await db.addToWhitelist(String(player_id), note || '');
-    return res.json({ ok: true });
-});
-
-// POST /auth/remove — remove a player from whitelist (admin only)
-// Body: { key, player_id }
-app.post('/auth/remove', async (req, res) => {
-    const { key, player_id } = req.body;
-    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
-    if (!player_id) return bad(res, 'Missing player_id');
-    await db.removeFromWhitelist(String(player_id));
-    return res.json({ ok: true });
-});
-
-// GET /auth/list?key=xxx — list all whitelisted players (admin only)
-app.get('/auth/list', async (req, res) => {
-    const { key } = req.query;
-    if (key !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+// GET /admin/whitelist — view all
+app.get('/admin/whitelist', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
     const list = await db.getWhitelist();
     return res.json({ ok: true, list });
 });
@@ -403,6 +360,45 @@ app.post('/auth/refresh', async (req, res) => {
     if (!new_part_a) return res.json({ ok: false });
 
     return res.json({ ok: true, part_a: new_part_a });
+});
+
+
+// ── GET /script/activator ─────────────────────────────────────────────────────
+// Returns Script 2 (trade activator) if player is whitelisted
+app.post('/script/activator', async (req, res) => {
+    const { player_id, world_id } = req.body;
+    if (!player_id || !world_id) return res.json({ ok: false });
+    const allowed = await db.isPlayerWhitelisted(String(player_id), String(world_id));
+    if (!allowed) return res.json({ ok: false });
+    const fs = require('fs');
+    const path = require('path');
+    try {
+        const script = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
+        return res.json({ ok: true, script });
+    } catch { return res.json({ ok: false }); }
+});
+
+// ── POST /script/main ─────────────────────────────────────────────────────────
+// Returns encrypted Script 3 if player has valid token
+app.post('/script/main', async (req, res) => {
+    const { player_id, world_id } = req.body;
+    const part_axorb = req.headers['x-token'];
+    if (!player_id || !world_id || !part_axorb) return res.json({ ok: false });
+
+    const row = await db.getAuthToken(String(player_id), String(world_id));
+    if (!row) return res.json({ ok: false });
+
+    const server_axorb = xorHex(row.token, row.part_c);
+    if (server_axorb !== part_axorb) return res.json({ ok: false });
+
+    const fs   = require('fs');
+    const path = require('path');
+    const CryptoJS = require('crypto-js');
+    try {
+        const script    = fs.readFileSync(path.join(__dirname, 'script3.js'), 'utf8');
+        const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
+        return res.json({ ok: true, data: encrypted });
+    } catch { return res.json({ ok: false }); }
 });
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
