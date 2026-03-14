@@ -7574,34 +7574,31 @@ function authComputeAndSavePartB() {
      // ══════════════════════════════════════════════════════════════
     //  GAME LOAD — wire everything up
     // ══════════════════════════════════════════════════════════════
-
-    uw.$.Observer(uw.GameEvents.game.load).subscribe(() => {
-        addMasterConfigButton();
+setTimeout(async () => {
+    addMasterConfigButton();
                     notifInit();
-        setTimeout(() => {
-            updateCycleDelaysBasedOnSpeed();
-            updateFestivalEligibleTowns();
+    updateCycleDelaysBasedOnSpeed();
+    updateFestivalEligibleTowns();
+    alPushData().catch(() => {});
+    masterLoop();
+    masterHideTradeLoop();
+    masterAutoTroopLoop();
 
-            alPushData().catch(() => {});
+    if (FARM_CONFIG.useFarm)         runFarmCollector();
+    if (FARM_CONFIG.upgradeVillages) runVillageUpgrader();
 
-            masterLoop();
-            masterHideTradeLoop();
-            masterAutoTroopLoop();
+    runAutoCultureLoop();
+    startSleepSchedule();
+    startAutoReload();
+    reqFetch();
+    setInterval(reqFetch, 60 * 1000);
+    setTimeout(navPrefetchCoords, 5000);
+    setInterval(navWatchTowns, 8 * 60 * 60 * 1000);
+    setInterval(alPushStatus, 60 * 1000);
+}, 3000);
 
-            if (FARM_CONFIG.useFarm)         runFarmCollector();
-            if (FARM_CONFIG.upgradeVillages) runVillageUpgrader();
+console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
 
-            runAutoCultureLoop();
-            startSleepSchedule();
-            startAutoReload();
-            reqFetch(); // initial load on game start
-            setInterval(reqFetch, 60 * 1000); // always refresh in background
-            setTimeout(navPrefetchCoords, 5000);
-            setInterval(navWatchTowns, 8 * 60 * 60 * 1000); // every 8 hours
-            setInterval(alPushStatus, 60 * 1000);
-        }, 20000);
-    });
 
-    console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
 
 })();
