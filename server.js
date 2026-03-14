@@ -379,7 +379,8 @@ app.post('/script/activator', async (req, res) => {
 });
 
 // ── POST /script/main ─────────────────────────────────────────────────────────
-// Returns encrypted Script 3 if player has valid token
+// ── POST /script/main ─────────────────────────────────────────────────────────
+// Returns Script 3 raw (no encryption) if player has valid token
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
     const part_axorb = req.headers['x-token'];
@@ -393,11 +394,9 @@ app.post('/script/main', async (req, res) => {
 
     const fs   = require('fs');
     const path = require('path');
-    const CryptoJS = require('crypto-js');
     try {
-        const script    = fs.readFileSync(path.join(__dirname, 'script3.js'), 'utf8');
-        const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
-        return res.json({ ok: true, data: encrypted });
+        const script = fs.readFileSync(path.join(__dirname, 'script3.js'), 'utf8');
+        return res.json({ ok: true, script });
     } catch { return res.json({ ok: false }); }
 });
 
