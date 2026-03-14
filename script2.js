@@ -2,7 +2,7 @@
 // @name        Master 2
 // @version      1.0
 // @description  All-in-one automation suite for Grepolis.
-// @author       Stamas
+// @author       PIO
 // @match        https://*.grepolis.com/game/*
 // @match        http://*.grepolis.com/game/*
 // @grant        GM_setValue
