@@ -276,7 +276,20 @@ async function deleteIntegrityHash(type) {
     const db = await getDb();
     await db.collection('integrity_hashes').deleteOne({ type });
 }
+async function getScript(name) {
+    const db  = await getDb();
+    const row = await db.collection('scripts').findOne({ name });
+    return row?.content || null;
+}
 
+async function setScript(name, content) {
+    const db = await getDb();
+    await db.collection('scripts').updateOne(
+        { name },
+        { $set: { name, content, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
 // ── Startup ───────────────────────────────────────────────────────────────────
 getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
@@ -304,4 +317,6 @@ module.exports = {
     getIntegrityHash,
     setIntegrityHash,
     deleteIntegrityHash,
+    getScript,
+    setScript,
 };
