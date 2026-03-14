@@ -397,7 +397,7 @@ app.post('/script/main', async (req, res) => {
     const path     = require('path');
     const CryptoJS = require('crypto-js');
     try {
-        const script    = fs.readFileSync(path.join(__dirname, 'script3.js'), 'utf8');
+        const script = fs.readFileSync('/etc/secrets/script3.js', 'utf8');
         const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
         return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
