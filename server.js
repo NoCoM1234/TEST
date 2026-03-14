@@ -403,11 +403,20 @@ app.post('/script/main', async (req, res) => {
     } catch { return res.json({ ok: false }); }
 });
 
+// DECOY endpoint
+app.post('/auth/session', (req, res) => {
+    res.json({ ok: true, session_token: require('crypto').randomBytes(32).toString('hex') });
+});
+
+// DECOY endpoint
+app.post('/auth/license', (req, res) => {
+    res.json({ ok: true, valid: true, expires: Date.now() + 86400000 });
+});
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
-    console.log(`[Server] Grepolis Master API v2.3.0 running on port ${PORT}`);
+    console.log(`[Server]  Master API v2.3.0 running on port ${PORT}`);
     loadData();
     loadOffsets();
     loadPlayers();
