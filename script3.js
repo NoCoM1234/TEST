@@ -7598,4 +7598,3 @@ function authComputeAndSavePartB() {
         setInterval(alPushStatus, 60 * 1000);
 console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
 })()
-})();
