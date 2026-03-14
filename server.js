@@ -414,10 +414,30 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: true, data: encrypted });
     } catch { return res.json({ ok: false }); }
 });
+// ── POST /admin/script — upload script content to MongoDB ────────────────────
+app.post('/admin/script', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const { name, content } = req.body;
+    if (!name || !content) return bad(res, 'Missing name or content');
+    await db.setScript(name, content);
+    console.log(`[Admin] Script '${name}' uploaded — ${content.length} bytes`);
+    return res.json({ ok: true });
+});
+
+// ── GET /admin/script/:name — check a script exists ──────────────────────────
+app.get('/admin/script/:name', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const script = await db.getScript(req.params.name);
+    if (!script) return res.json({ ok: false, error: 'Not found' });
+    return res.json({ ok: true, size: script.length });
+});
+
 // ── POST /script/main ─────────────────────────────────────────────────────────
+// Returns encrypted Script 3 — reads from MongoDB (no size limit)
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
     const part_axorb = req.headers['x-token'];
+    const clientHash = req.headers['x-integrity'];
     if (!player_id || !world_id || !part_axorb) return res.json({ ok: false });
 
     const row = await db.getAuthToken(String(player_id), String(world_id));
@@ -426,14 +446,31 @@ app.post('/script/main', async (req, res) => {
     const server_axorb = xorHex(row.token, row.part_c);
     if (server_axorb !== part_axorb) return res.json({ ok: false });
 
-    const fs       = require('fs');
-    const path     = require('path');
+    // ── Integrity check ───────────────────────────────────────────────────────
+    if (clientHash) {
+        const stored = await db.getIntegrityHash('script2');
+        if (!stored) {
+            await db.setIntegrityHash('script2', clientHash);
+            console.log(`[Integrity] Learned script2 hash: ${clientHash}`);
+        } else if (stored !== clientHash) {
+            console.warn(`[Integrity] script2 TAMPERED — expected ${stored}, got ${clientHash}`);
+            return res.json({ ok: false });
+        }
+    }
+
     const CryptoJS = require('crypto-js');
     try {
-        const script = fs.readFileSync('/etc/secrets/script3.js', 'utf8');
+        const script = await db.getScript('script3');
+        if (!script) {
+            console.error('[script/main] script3 not found in DB — upload it with node upload_script3.js');
+            return res.json({ ok: false });
+        }
         const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
         return res.json({ ok: true, data: encrypted });
-    } catch { return res.json({ ok: false }); }
+    } catch (e) {
+        console.error('[script/main] Error:', e.message);
+        return res.json({ ok: false });
+    }
 });
 
 // DECOY endpoint
