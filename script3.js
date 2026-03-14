@@ -1,6 +1,4 @@
 (function () {
-    'use strict';
-(function () {
 
     const uw = unsafeWindow || window;
 
@@ -7577,8 +7575,8 @@ function authComputeAndSavePartB() {
     //  GAME LOAD — wire everything up
     // ══════════════════════════════════════════════════════════════
 
-    uw.$.Observer(uw.GameEvents.game.load).subscribe(() => {
-       //GM_deleteValue('grp_token_gr112');
+    (async function () {
+    'use strict';
     addMasterConfigButton();
     notifInit();
     setTimeout(async () => {
@@ -7598,8 +7596,5 @@ function authComputeAndSavePartB() {
         setTimeout(navPrefetchCoords, 5000);
         setInterval(navWatchTowns, 8 * 60 * 60 * 1000);
         setInterval(alPushStatus, 60 * 1000);
-    }, 20000);
-});
 console.log('[Grepolis Master v7.5 — AutoBuild + AutoResearch + AutoHide + AutoFarm + AutoTroop] Loaded ✓');
-})()
 })()
