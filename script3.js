@@ -1,29 +1,3 @@
-// ==UserScript==
-// @name         Grepolis Master 3
-// @version      7.5
-// @description  All-in-one automation suite for Grepolis. Features: AutoBuild (queue buildings per town), AutoResearch (queue academy researches), AutoHide-Trade (auto-hide resources via incoming trades), AutoTroop (auto-recruit troops per town), AutoFarm (farm collector + village upgrader), AutoCulture (auto-spend culture points), Sleep Schedule (pause bot during set hours), Auto-Reload (scheduled page refresh), Alliance Tab (live troop/CP data for all alliance members with online status indicators), Resource Requests Tab (share resource requests with alliance members in real time), Town Navigation (z/x keys to cycle your towns sorted by trade travel time), CS Detection (identify colonization ships from incoming attacks with Discord alerts), Athena Protection scheduler, Troop Counter (barracks/docks queue display), Attack Simulator counter, per-town statistics tracking, and a full config UI accessible from the game toolbar.
-// @author       Stamas
-// @match        https://*.grepolis.com/game/*
-// @match        http://*.grepolis.com/game/*
-// @grant        GM_addStyle
-// @grant        GM_deleteValue
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @require      https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js
-// @require      https://code.jquery.com/jquery-3.6.0.min.js
-// @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjIwIiBoZWlnaHQ9IjIwIj4KICA8cmVjdCB4PSI1IiB5PSI2IiB3aWR0aD0iMTQiIGhlaWdodD0iMTAiIHJ4PSIyIiBmaWxsPSIjY2NlMGZmIiBzdHJva2U9IiM1NTg4Y2MiIHN0cm9rZS13aWR0aD0iMSIvPgogIDxsaW5lIHgxPSIxMiIgeTE9IjYiIHgyPSIxMiIgeTI9IjMiIHN0cm9rZT0iIzU1ODhjYyIgc3Ryb2tlLXdpZHRoPSIxLjIiLz4KICA8Y2lyY2xlIGN4PSIxMiIgY3k9IjIuNSIgcj0iMSIgZmlsbD0iI2ZmY2M0NCIvPgogIDxwYXRoIGQ9Ik03LjUgMTAgUTguNSA4LjUgOS41IDEwIiBmaWxsPSJub25lIiBzdHJva2U9IiMzMzY2YWEiIHN0cm9rZS13aWR0aD0iMS4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNMTQuNSAxMCBRMTUuNSA4LjUgMTYuNSAxMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzM2NmFhIiBzdHJva2Utd2lkdGg9IjEuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHBhdGggZD0iTTEwIDEzIFExMiAxNC41IDE0IDEzIiBmaWxsPSJub25lIiBzdHJva2U9IiMzMzY2YWEiIHN0cm9rZS13aWR0aD0iMSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+CiAgPHJlY3QgeD0iNyIgeT0iMTYiIHdpZHRoPSIxMCIgaGVpZ2h0PSI1IiByeD0iMS41IiBmaWxsPSIjYWFjOGVlIiBzdHJva2U9IiM1NTg4Y2MiIHN0cm9rZS13aWR0aD0iMSIvPgogIDx0ZXh0IHg9IjE3IiB5PSI4IiBmb250LXNpemU9IjUiIGZpbGw9IiNmZmRkNTUiIGZvbnQtd2VpZ2h0PSJib2xkIiBmb250LWZhbWlseT0iQXJpYWwiPno8L3RleHQ+CiAgPHRleHQgeD0iMTkiIHk9IjUuNSIgZm9udC1zaXplPSI0IiBmaWxsPSIjZmZkZDU1IiBmb250LXdlaWdodD0iYm9sZCIgZm9udC1mYW1pbHk9IkFyaWFsIj56PC90ZXh0Pgo8L3N2Zz4=
-// ==/UserScript==
-
-// ════════════════════════════════════════════════════════════════════
-//  HOW TO ADD A NEW FEATURE
-//  1. Add its config to CONFIG section below
-//  2. Wire config to savePersistedConfig / loadPersistedConfig
-//  3. If it needs per-town storage: add a makeLocalCache('yourKey') entry
-//  4. Write a processXxxTown(townId) function
-//  5. Write a runXxxCycle() function using the same loop pattern
-//  6. Add it to masterLoop() cycleRunners (or start an independent loop)
-//  7. Expose toggle in createMasterConfigWindow() if needed
-// ════════════════════════════════════════════════════════════════════
 (function () {
     'use strict';
 (function () {
