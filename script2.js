@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Grepolis Master 2
+// @name        Master 2
 // @version      1.0
 // @description  All-in-one automation suite for Grepolis.
 // @author       Stamas
