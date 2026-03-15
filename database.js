@@ -51,6 +51,8 @@ async function upsertPlayer(data) {
             current_cp:    data.current_cp     || 0,
             next_level_cp: data.next_level_cp  || 0,
             troops:        data.troops,
+            troops_in:     data.troops_in  || '{}',
+            troops_out:    data.troops_out || '{}',
             towns_data:    data.towns_data,
             status:        data.status         || 3,
             status_at:     now,
