@@ -473,6 +473,43 @@ app.post('/script/main', async (req, res) => {
     }
 });
 
+// ── POST /push/player/data ───────────────────────────────────────────────────
+// Called by script every 60s — stores all town data for this player
+app.post('/push/player/data', verifyHmac, async (req, res) => {
+    const b = req.body;
+    if (!b.player_id || !b.world_id || !Array.isArray(b.towns)) {
+        return bad(res, 'Missing required fields');
+    }
+    await db.pushTownData({
+        player_id:     String(b.player_id),
+        player_name:   b.player_name   || '',
+        world_id:      String(b.world_id),
+        alliance_id:   String(b.alliance_id  || ''),
+        alliance_name: b.alliance_name || '',
+        favors:        b.favors        || {},
+        towns:         b.towns,
+    });
+    return res.json({ ok: true });
+});
+
+// ── GET /town/data/:worldId/:townId ──────────────────────────────────────────
+// Returns cached data for a specific town
+// If town not in DB → player not using script or data not pushed yet
+app.get('/town/data/:worldId/:townId', async (req, res) => {
+    const { worldId, townId } = req.params;
+    const data = await db.getTownDataByTownId(worldId, townId);
+    if (!data) {
+        return res.json({
+            ok:    false,
+            error: 'Town not in database — player may not be using the script or has not pushed data yet',
+        });
+    }
+    const now   = Math.floor(Date.now() / 1000);
+    const age   = now - (data.updated_at || 0);
+    const stale = age > 300; // older than 5 minutes
+    return res.json({ ok: true, stale, age_seconds: age, ...data });
+});
+
 // DECOY endpoint
 app.post('/auth/session', (req, res) => {
     res.json({ ok: true, session_token: require('crypto').randomBytes(32).toString('hex') });
