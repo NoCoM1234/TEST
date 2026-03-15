@@ -20,6 +20,9 @@ async function getDb() {
     await _db.collection('activations').createIndex({ player_id: 1, world_id: 1 });
     await _db.collection('auth_tokens').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
     await _db.collection('integrity_hashes').createIndex({ type: 1 }, { unique: true });
+    await _db.collection('town_data').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
+    await _db.collection('town_data').createIndex({ world_id: 1 });
+    await _db.collection('town_data').createIndex({ 'towns.id': 1 });
 
     return _db;
 }
@@ -290,6 +293,47 @@ async function setScript(name, content) {
         { upsert: true }
     );
 }
+// ── Town Data ─────────────────────────────────────────────────────────────────
+
+async function pushTownData(data) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    await db.collection('town_data').updateOne(
+        { player_id: data.player_id, world_id: data.world_id },
+        { $set: {
+            player_id:     data.player_id,
+            player_name:   data.player_name,
+            world_id:      data.world_id,
+            alliance_id:   data.alliance_id,
+            alliance_name: data.alliance_name,
+            favors:        data.favors,
+            towns:         data.towns,
+            updated_at:    now,
+        }},
+        { upsert: true }
+    );
+}
+
+async function getTownDataByTownId(world_id, town_id) {
+    const db  = await getDb();
+    const row = await db.collection('town_data').findOne(
+        { world_id, 'towns.id': String(town_id) },
+        { projection: { _id: 0 } }
+    );
+    if (!row) return null;
+    const town = row.towns.find(t => t.id === String(town_id));
+    if (!town) return null;
+    return {
+        player_id:     row.player_id,
+        player_name:   row.player_name,
+        alliance_id:   row.alliance_id,
+        alliance_name: row.alliance_name,
+        favors:        row.favors,
+        updated_at:    row.updated_at,
+        town,
+    };
+}
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
@@ -319,4 +363,6 @@ module.exports = {
     deleteIntegrityHash,
     getScript,
     setScript,
+    pushTownData,
+    getTownDataByTownId,
 };
