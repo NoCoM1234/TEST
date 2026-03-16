@@ -252,6 +252,7 @@ app.post('/requests/push', verifyHmac, async (req, res) => {
         stone:         parseInt(b.stone) || 0,
         iron:          parseInt(b.iron)  || 0,
         expires_at:    parseInt(b.expires_at),
+        comment:       b.comment ? String(b.comment).trim().slice(0, 300) : '',
     });
     return res.json({ ok: true, id: result.lastInsertId });
 });
