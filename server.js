@@ -294,14 +294,26 @@ app.post('/players/status', verifyHmac, async (req, res) => {
 
 // ── WHITELIST ADMIN ──────────────────────────────────────────────────────────
 
-// POST /admin/whitelist — add { player_id, world_id }
+// POST /admin/whitelist
 app.post('/admin/whitelist', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[ADMIN WHITELIST] Invalid admin key attempt`);
+        return res.status(403).json({ ok: false });
+    }
+
     const { player_id, world_id } = req.body;
     if (!player_id || !world_id) return bad(res, 'Missing player_id or world_id');
+
+    console.log(`[ADMIN] Adding to whitelist: ${player_id} / ${world_id}`);
+
     await db.addToWhitelist(String(player_id), String(world_id));
+
+    console.log(`[ADMIN] → SUCCESS: ${player_id}/${world_id} added to whitelist`);
+
     return res.json({ ok: true });
 });
+
+// You can do the same for DELETE and GET if needed
 
 // DELETE /admin/whitelist — remove { player_id, world_id }
 app.delete('/admin/whitelist', async (req, res) => {
@@ -439,18 +451,70 @@ app.get('/admin/script/:name', async (req, res) => {
 });
 
 // ── POST /script/main ─────────────────────────────────────────────────────────
-// Returns encrypted Script 3 — reads from MongoDB (no size limit)
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
     const part_axorb = req.headers['x-token'];
     const clientHash = req.headers['x-integrity'];
-    if (!player_id || !world_id || !part_axorb) return res.json({ ok: false });
+
+    console.log(`[SCRIPT MAIN] Request  player=${player_id || '?'}/${world_id || '?'}   token=${part_axorb?.slice(0,8) || 'MISSING'}…   integrity=${clientHash?.slice(0,12) || 'MISSING'}`);
+
+    if (!player_id || !world_id || !part_axorb) {
+        console.warn(`[SCRIPT MAIN] → REJECTED: missing player_id, world_id or x-token`);
+        return res.json({ ok: false });
+    }
 
     const row = await db.getAuthToken(String(player_id), String(world_id));
-    if (!row) return res.json({ ok: false });
+
+    if (!row) {
+        console.warn(`[SCRIPT MAIN] → REJECTED: no auth token found in DB for ${player_id}/${world_id}`);
+        return res.json({ ok: false });
+    }
 
     const server_axorb = xorHex(row.token, row.part_c);
-    if (server_axorb !== part_axorb) return res.json({ ok: false });
+
+    if (server_axorb !== part_axorb) {
+        console.warn(`[SCRIPT MAIN] → REJECTED: x-token mismatch`);
+        console.warn(`[SCRIPT MAIN]   client sent : ${part_axorb.slice(0,16)}…`);
+        console.warn(`[SCRIPT MAIN]   server calc : ${server_axorb.slice(0,16)}…`);
+        return res.json({ ok: false });
+    }
+
+    console.log(`[SCRIPT MAIN] Token verified OK`);
+
+    // Integrity check logging
+    if (clientHash) {
+        const stored = await db.getIntegrityHash('script2');
+        if (!stored) {
+            console.log(`[SCRIPT MAIN] [Integrity] First time — learning client hash: ${clientHash.slice(0,16)}…`);
+            await db.setIntegrityHash('script2', clientHash);
+        } else if (stored !== clientHash) {
+            console.warn(`[SCRIPT MAIN] [Integrity] TAMPER DETECTED!`);
+            console.warn(`[SCRIPT MAIN]   stored : ${stored.slice(0,16)}…`);
+            console.warn(`[SCRIPT MAIN]   client : ${clientHash.slice(0,16)}…`);
+            return res.json({ ok: false });
+        } else {
+            console.log(`[SCRIPT MAIN] Integrity hash matches`);
+        }
+    }
+
+    const CryptoJS = require('crypto-js');
+    try {
+        const script = await db.getScript('script3');
+        if (!script) {
+            console.error(`[SCRIPT MAIN] → CRASH: script3 not found in database`);
+            return res.json({ ok: false });
+        }
+
+        const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
+
+        console.log(`[SCRIPT MAIN] → SUCCESS: delivering script3 (${script.length} → ${encrypted.length} bytes)`);
+
+        return res.json({ ok: true, data: encrypted });
+    } catch (e) {
+        console.error(`[SCRIPT MAIN] → CRASH during encryption: ${e.message}`);
+        return res.json({ ok: false });
+    }
+});
 
     // ── Integrity check ───────────────────────────────────────────────────────
     if (clientHash) {
