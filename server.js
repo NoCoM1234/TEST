@@ -23,14 +23,12 @@ async function verifyHmac(req, res, next) {
         console.warn(`${tag} — FAIL: Missing x-timestamp or x-signature`);
         return res.status(401).json({ ok: false, error: 'Missing signature' });
     }
-    // Reject requests older than 60 seconds
     const now = Math.floor(Date.now() / 1000);
     const age = Math.abs(now - parseInt(ts));
     if (age > 60) {
         console.warn(`${tag} — FAIL: Request expired — age=${age}s (max 60s)`);
         return res.status(401).json({ ok: false, error: 'Request expired' });
     }
-    // Get player_id and world_id from body
     const player_id = String(req.body?.id || req.body?.player_id || '');
     const world_id = String(req.body?.world || req.body?.world_id || '');
     console.log(`${tag} — identity: player_id=${player_id} world_id=${world_id}`);
@@ -38,14 +36,12 @@ async function verifyHmac(req, res, next) {
         console.warn(`${tag} — FAIL: Missing player_id or world_id in body`);
         return res.status(401).json({ ok: false, error: 'Missing identity' });
     }
-    // Get token from DB
     const row = await db.getAuthToken(player_id, world_id);
     if (!row) {
         console.warn(`${tag} — FAIL: No auth token found in DB for player=${player_id} world=${world_id}`);
         return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
     console.log(`${tag} — token found in DB`);
-    // Verify X-Token
     const part_axorb = req.headers['x-token'];
     if (!part_axorb) {
         console.warn(`${tag} — FAIL: Missing x-token header`);
@@ -58,7 +54,6 @@ async function verifyHmac(req, res, next) {
         return res.status(401).json({ ok: false, error: 'Invalid token' });
     }
     console.log(`${tag} — X-Token OK`);
-    // HMAC verification
     const payload = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', part_axorb).update(payload).digest('hex');
     if (expected !== sig) {
@@ -260,6 +255,7 @@ app.get('/alliance/:world/:allianceId', async (req, res) => {
 });
 
 // ── POST /players/status ──────────────────────────────────────────────────────
+// (logging removed as requested)
 app.post('/players/status', verifyHmac, async (req, res) => {
     const { id, world, status } = req.body;
     if (!id || !world || status == null) return bad(res, 'Missing fields');
@@ -325,11 +321,27 @@ app.post('/auth/register', async (req, res) => {
     return res.json({ ok: true });
 });
 
+// ── POST /auth/claim ──────────────────────────────────────────────────────────
+// Added detailed logging
 app.post('/auth/claim', async (req, res) => {
     const { player_id, world_id, wood, stone, iron, origin_town_id, part_b } = req.body;
-    if (!player_id || !world_id || !origin_town_id || !part_b) return res.json({ ok: false });
+
+    console.log(`[CLAIM] Attempt  player=${player_id || '?'}/${world_id || '?'}  origin_town=${origin_town_id || '?'}  res=${wood || 0}/${stone || 0}/${iron || 0}  part_b=${part_b?.slice(0,8) || 'MISSING'}…`);
+
+    if (!player_id || !world_id || !origin_town_id || !part_b) {
+        console.warn(`[CLAIM] → REJECTED: missing required fields`);
+        return res.json({ ok: false });
+    }
+
     const originInfo = await getAttackerInfo(String(world_id), String(origin_town_id));
-    if (!originInfo) return res.json({ ok: false });
+
+    if (!originInfo) {
+        console.warn(`[CLAIM] → REJECTED: origin town ${origin_town_id} not found in world ${world_id}`);
+        return res.json({ ok: false });
+    }
+
+    console.log(`[CLAIM] Origin town found → attacker = ${originInfo.player_id || '?'}`);
+
     const part_a = await db.claimActivation(
         String(player_id),
         String(world_id),
@@ -339,7 +351,14 @@ app.post('/auth/claim', async (req, res) => {
         String(originInfo.player_id),
         part_b,
     );
-    if (!part_a) return res.json({ ok: false });
+
+    if (!part_a) {
+        console.warn(`[CLAIM] → FAILED: claimActivation returned no part_a (invalid trade / already claimed / db error?)`);
+        return res.json({ ok: false });
+    }
+
+    console.log(`[CLAIM] → SUCCESS: part_a generated = ${part_a.slice(0,8)}…`);
+
     return res.json({ ok: true, part_a });
 });
 
@@ -370,7 +389,7 @@ app.post('/auth/refresh', async (req, res) => {
     return res.json({ ok: true, part_a: new_part_a });
 });
 
-// ── SCRIPT ACTIVATOR (improved logging) ───────────────────────────────────────
+// ── SCRIPT ACTIVATOR ──────────────────────────────────────────────────────────
 app.post('/script/activator', async (req, res) => {
     const { player_id, world_id } = req.body;
 
@@ -408,7 +427,7 @@ app.post('/script/activator', async (req, res) => {
     }
 });
 
-// ── SCRIPT MAIN (improved logging) ────────────────────────────────────────────
+// ── SCRIPT MAIN ───────────────────────────────────────────────────────────────
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
     const part_axorb = req.headers['x-token'];
@@ -439,7 +458,6 @@ app.post('/script/main', async (req, res) => {
 
     console.log(`[SCRIPT MAIN] Token verified OK`);
 
-    // Integrity check logging
     if (clientHash) {
         const stored = await db.getIntegrityHash('script2');
         if (!stored) {
@@ -474,8 +492,9 @@ app.post('/script/main', async (req, res) => {
     }
 });
 
-// ── Other endpoints (unchanged except for minor consistency) ──────────────────
+// ── Other endpoints ───────────────────────────────────────────────────────────
 app.post('/push/player/data', verifyHmac, async (req, res) => {
+    // logging removed as requested
     const b = req.body;
     if (!b.player_id || !b.world_id || !Array.isArray(b.towns)) {
         return bad(res, 'Missing required fields');
