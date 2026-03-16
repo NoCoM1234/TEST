@@ -84,7 +84,7 @@ async function verifyHmac(req, res, next) {
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'changeme';
-const { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, loadPlayers, loadAlliances } = require('./towns');
+const { getTownData, getAttackerInfo, getAllianceById, invalidateCache } = require('./towns');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -158,30 +158,31 @@ app.get('/players/:world/:playerId/towns', async (req, res) => {
     return res.json({ ok: true, towns });
 });
 
-// ── GET /towns/:townId1/:townId2 ──────────────────────────────────────────────
+// ── GET /towns/:world/:townId1/:townId2 ───────────────────────────────────────
 // Returns raw data for two towns so distance can be calculated client-side.
-app.get('/towns/:townId1/:townId2', (req, res) => {
-    const { townId1, townId2 } = req.params;
-    const t1 = getTownData(townId1);
-    const t2 = getTownData(townId2);
+app.get('/towns/:world/:townId1/:townId2', async (req, res) => {
+    const { world, townId1, townId2 } = req.params;
+    const t1 = await getTownData(world, townId1);
+    const t2 = await getTownData(world, townId2);
     if (!t1) return bad(res, `Town ${townId1} not found`, 404);
     if (!t2) return bad(res, `Town ${townId2} not found`, 404);
     return res.json({ ok: true, town1: { id: townId1, ...t1 }, town2: { id: townId2, ...t2 } });
 });
 
 // ── POST /towns/batch ─────────────────────────────────────────────────────────
-// Accepts { ids: [townId, ...] }, returns coords for all found towns.
+// Accepts { world, ids: [townId, ...] }, returns coords for all found towns.
 // Used by userscript to pre-fetch all player town coords in one request.
 // Response: { ok, towns: { townId: { island_x, island_y, offset_x, offset_y } } }
-app.post('/towns/batch', (req, res) => {
-    const ids = req.body?.ids;
+app.post('/towns/batch', async (req, res) => {
+    const { world, ids } = req.body;
+    if (!world) return bad(res, 'Missing world');
     if (!Array.isArray(ids) || ids.length === 0)
         return bad(res, 'Body must have ids array');
     if (ids.length > 500)
         return bad(res, 'Max 500 ids per request');
     const result = {};
     for (const id of ids) {
-        const t = getTownData(String(id));
+        const t = await getTownData(world, String(id));
         if (!t) continue;
         result[String(id)] = {
             island_x: t.island_x,
@@ -193,13 +194,14 @@ app.post('/towns/batch', (req, res) => {
     return res.json({ ok: true, towns: result });
 });
 
-// ── GET /attacker/:townId ─────────────────────────────────────────────────────
+// ── GET /attacker/:world/:townId ──────────────────────────────────────────────
 // Given a home_town_id, returns the attacker's player name + alliance.
 // Used by the AttackNotification userscript to replace the in-game API call.
 // Response: { ok, town_name, player_name, alliance_name, alliance_id }
-app.get('/attacker/:townId', (req, res) => {
-    const info = getAttackerInfo(req.params.townId);
-    if (!info) return bad(res, `Town ${req.params.townId} not found`, 404);
+app.get('/attacker/:world/:townId', async (req, res) => {
+    const { world, townId } = req.params;
+    const info = await getAttackerInfo(world, townId);
+    if (!info) return bad(res, `Town ${townId} not found`, 404);
     return res.json({ ok: true, ...info });
 });
 
@@ -274,9 +276,10 @@ app.delete('/requests/:id', verifyHmac, async (req, res) => {
     return res.json({ ok: true });
 });
 
-// GET /alliance/:allianceId
-app.get('/alliance/:allianceId', (req, res) => {
-    const name = getAllianceById(req.params.allianceId);
+// GET /alliance/:world/:allianceId
+app.get('/alliance/:world/:allianceId', async (req, res) => {
+    const { world, allianceId } = req.params;
+    const name = await getAllianceById(world, allianceId);
     return res.json({ ok: true, name: name || '' });
 });
 
@@ -341,7 +344,7 @@ app.post('/auth/claim', async (req, res) => {
     const { player_id, world_id, wood, stone, iron, origin_town_id, part_b } = req.body;
     if (!player_id || !world_id || !origin_town_id || !part_b) return res.json({ ok: false });
 
-    const originInfo = getAttackerInfo(String(origin_town_id));
+    const originInfo = await getAttackerInfo(String(world_id), String(origin_town_id));
     if (!originInfo) return res.json({ ok: false });
 
     const part_a = await db.claimActivation(
@@ -533,13 +536,26 @@ app.post('/auth/verify_checksum', (req, res) => {
 app.post('/config/fetch', (req, res) => {
     res.json({ ok: false });  // returns false so the GM_setValue never fires
 });
+// ── POST /admin/world-data ────────────────────────────────────────────────────
+// Called by GitHub Actions to push parsed world CSV data into MongoDB.
+app.post('/admin/world-data', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    const { world_id, towns, islands, players, alliances } = req.body;
+    if (!world_id) return bad(res, 'Missing world_id');
+    if (!Array.isArray(towns) || !Array.isArray(islands)) return bad(res, 'towns and islands must be arrays');
+    await db.upsertWorldData(world_id, towns, islands);
+    if (Array.isArray(players) && Array.isArray(alliances)) {
+        await db.upsertWorldMeta(world_id, players, alliances);
+    }
+    invalidateCache(world_id);
+    console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands`);
+    return res.json({ ok: true });
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
     console.log(`[Server]  Master API v2.3.0 running on port ${PORT}`);
-    loadData();
-    loadOffsets();
-    loadPlayers();
-    loadAlliances();
+    // World data is now loaded from MongoDB on demand per world
 });
