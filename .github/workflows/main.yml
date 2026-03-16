@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        world: [gr112]      # add more worlds here e.g. [gr112, gr113, gr114]
+        world: [gr112,gr119]      # add more worlds here e.g. [gr112, gr113, gr114]
       fail-fast: false      # continue other worlds if one fails
 
     steps:
