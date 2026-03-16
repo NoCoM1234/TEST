@@ -417,20 +417,39 @@ app.post('/auth/refresh', async (req, res) => {
 // ── GET /script/activator ─────────────────────────────────────────────────────
 app.post('/script/activator', async (req, res) => {
     const { player_id, world_id } = req.body;
-    if (!player_id || !world_id) return res.json({ ok: false });
+
+    console.log(`[ACTIVATOR] Request from ${player_id || 'MISSING'} / ${world_id || 'MISSING'}`);
+
+    if (!player_id || !world_id) {
+        console.warn(`[ACTIVATOR] → REJECTED: missing player_id or world_id`);
+        return res.json({ ok: false });
+    }
 
     const allowed = await db.isPlayerWhitelisted(String(player_id), String(world_id));
-    if (!allowed) return res.json({ ok: false });
 
-    const fs       = require('fs');
-    const path     = require('path');
+    console.log(`[ACTIVATOR] Whitelist check for ${player_id}/${world_id} → ${allowed ? 'ALLOWED' : 'DENIED'}`);
+
+    if (!allowed) {
+        console.warn(`[ACTIVATOR] → REJECTED: player ${player_id} not whitelisted on world ${world_id}`);
+        return res.json({ ok: false });
+    }
+
+    const fs = require('fs');
+    const path = require('path');
     const CryptoJS = require('crypto-js');
+
     try {
-        const key       = `${player_id}:${world_id}`;   // simple shared key
-        const script    = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
+        const key = `${player_id}:${world_id}`;
+        const script = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
         const encrypted = CryptoJS.AES.encrypt(script, key).toString();
+
+        console.log(`[ACTIVATOR] → SUCCESS: delivering script2 (${script.length} bytes raw → ${encrypted.length} encrypted)`);
+
         return res.json({ ok: true, data: encrypted });
-    } catch { return res.json({ ok: false }); }
+    } catch (err) {
+        console.error(`[ACTIVATOR] → CRASH while encrypting/delivering script2: ${err.message}`);
+        return res.json({ ok: false });
+    }
 });
 // ── POST /admin/script — upload script content to MongoDB ────────────────────
 app.post('/admin/script', async (req, res) => {
