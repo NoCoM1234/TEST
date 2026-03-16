@@ -3,49 +3,83 @@ on:
   schedule:
     - cron: '0 */3 * * *'  # every 3 hours
   workflow_dispatch:        # allow manual trigger from GitHub UI
-permissions:
-  contents: write           # allow the workflow to push commits
+
 jobs:
   fetch-world-data:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        world: [gr112]      # add more worlds here e.g. [gr112, gr113, gr114]
+      fail-fast: false      # continue other worlds if one fails
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Fetch and push ${{ matrix.world }}
+        run: |
+          echo "Fetching data for ${{ matrix.world }}..."
 
-      - name: Fetch towns.txt → A
-        run: |
-          curl -s --max-time 30 --retry 3 \
-            "https://gr112.grepolis.com/data/towns.txt" -o A
-          echo "towns.txt size: $(wc -l < A) lines"
+          curl -sf --max-time 30 --retry 3 \
+            "https://${{ matrix.world }}.grepolis.com/data/towns.txt" -o towns.txt
+          curl -sf --max-time 30 --retry 3 \
+            "https://${{ matrix.world }}.grepolis.com/data/islands.txt" -o islands.txt
+          curl -sf --max-time 30 --retry 3 \
+            "https://${{ matrix.world }}.grepolis.com/data/players.txt" -o players.txt
+          curl -sf --max-time 30 --retry 3 \
+            "https://${{ matrix.world }}.grepolis.com/data/alliances.txt" -o alliances.txt
 
-      - name: Fetch islands.txt → B
-        run: |
-          curl -s --max-time 30 --retry 3 \
-            "https://gr112.grepolis.com/data/islands.txt" -o B
-          echo "islands.txt size: $(wc -l < B) lines"
+          echo "towns:    $(wc -l < towns.txt) lines"
+          echo "islands:  $(wc -l < islands.txt) lines"
+          echo "players:  $(wc -l < players.txt) lines"
+          echo "alliances:$(wc -l < alliances.txt) lines"
 
-      - name: Fetch players.txt → C
-        run: |
-          curl -s --max-time 30 --retry 3 \
-            "https://gr112.grepolis.com/data/players.txt" -o C
-          echo "players.txt size: $(wc -l < C) lines"
+          node - << 'EOF'
+          const fs    = require('fs');
+          const https = require('https');
 
-      - name: Fetch alliances.txt → D
-        run: |
-          curl -s --max-time 30 --retry 3 \
-            "https://gr112.grepolis.com/data/alliances.txt" -o D
-          echo "alliances.txt size: $(wc -l < D) lines"
-       
-      - name: Commit and push if changed
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add A B C D
-          if git diff --staged --quiet; then
-            echo "No changes — nothing to commit"
-          else
-            git commit -m "chore: update world data $(date -u +%Y-%m-%d)"
-            git push
-          fi
+          const WORLD_ID  = '${{ matrix.world }}';
+          const ADMIN_KEY = '${{ secrets.ADMIN_KEY }}';
+          const HOST      = 'test-1i20.onrender.com';
+
+          function parse(file) {
+              return fs.readFileSync(file, 'utf8')
+                  .split('\n')
+                  .filter(l => l.trim())
+                  .map(l => l.split(',').map(p => decodeURIComponent(p.trim().replace(/\+/g, ' '))));
+          }
+
+          const towns     = parse('towns.txt');
+          const islands   = parse('islands.txt');
+          const players   = parse('players.txt');
+          const alliances = parse('alliances.txt');
+
+          console.log(`Parsed: ${towns.length} towns, ${islands.length} islands, ${players.length} players, ${alliances.length} alliances`);
+
+          const body = JSON.stringify({ world_id: WORLD_ID, towns, islands, players, alliances });
+
+          const options = {
+              hostname: HOST,
+              path:     '/admin/world-data',
+              method:   'POST',
+              headers: {
+                  'Content-Type':   'application/json',
+                  'Content-Length': Buffer.byteLength(body),
+                  'x-admin-key':    ADMIN_KEY,
+              },
+          };
+
+          const req = https.request(options, res => {
+              let data = '';
+              res.on('data', chunk => data += chunk);
+              res.on('end', () => {
+                  console.log(`Server response (${res.statusCode}):`, data);
+                  if (res.statusCode !== 200) process.exit(1);
+              });
+          });
+
+          req.on('error', err => {
+              console.error('Request failed:', err.message);
+              process.exit(1);
+          });
+
+          req.write(body);
+          req.end();
+          EOF
