@@ -23,6 +23,8 @@ async function getDb() {
     await _db.collection('town_data').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
     await _db.collection('town_data').createIndex({ world_id: 1 });
     await _db.collection('town_data').createIndex({ 'towns.id': 1 });
+    await _db.collection('world_data').createIndex({ world_id: 1 }, { unique: true });
+    await _db.collection('world_meta').createIndex({ world_id: 1 }, { unique: true });
 
     return _db;
 }
@@ -203,31 +205,28 @@ async function claimActivation(player_id, world_id, wood, stone, iron, origin_pl
     });
     if (!act) return null;
 
-    // Generate full token and split into 3 parts
-    const token  = crypto.randomBytes(48).toString('hex'); // 96 hex chars
-    const part_c = crypto.randomBytes(48).toString('hex'); // 96 hex chars
-    const part_a = xorHex(xorHex(token, part_b), part_c); // partA = token XOR partB XOR partC
+    const token  = crypto.randomBytes(48).toString('hex');
+    const part_c = crypto.randomBytes(48).toString('hex');
+    const part_a = xorHex(xorHex(token, part_b), part_c);
 
     await db.collection('activations').updateOne(
         { _id: act._id },
         { $set: { used: true, activated_at: Math.floor(Date.now() / 1000) } }
     );
 
-    // Store token + partC on server only
     await db.collection('auth_tokens').updateOne(
         { player_id, world_id },
         { $set: { player_id, world_id, token, part_c, created_at: Math.floor(Date.now() / 1000) } },
         { upsert: true }
     );
 
-    return part_a; // only partA goes to client
+    return part_a;
 }
 
 async function verifyToken(player_id, world_id, part_a_xor_b) {
     const db  = await getDb();
     const row = await db.collection('auth_tokens').findOne({ player_id, world_id });
     if (!row) return false;
-    // reconstruct: (partA XOR partB) XOR partC = token
     const reconstructed = xorHex(part_a_xor_b, row.part_c);
     return reconstructed === row.token;
 }
@@ -248,7 +247,6 @@ async function refreshToken(player_id, world_id, new_part_b) {
     const row = await db.collection('auth_tokens').findOne({ player_id, world_id });
     if (!row) return null;
 
-    // Generate new partC and recompute partA with new partB
     const new_part_c = crypto.randomBytes(48).toString('hex');
     const new_part_a = xorHex(xorHex(row.token, new_part_b), new_part_c);
 
@@ -281,6 +279,7 @@ async function deleteIntegrityHash(type) {
     const db = await getDb();
     await db.collection('integrity_hashes').deleteOne({ type });
 }
+
 async function getScript(name) {
     const db  = await getDb();
     const row = await db.collection('scripts').findOne({ name });
@@ -295,6 +294,7 @@ async function setScript(name, content) {
         { upsert: true }
     );
 }
+
 // ── Town Data ─────────────────────────────────────────────────────────────────
 
 async function pushTownData(data) {
@@ -336,6 +336,36 @@ async function getTownDataByTownId(world_id, town_id) {
     };
 }
 
+// ── World Data ────────────────────────────────────────────────────────────────
+
+async function upsertWorldData(world_id, towns, islands) {
+    const db  = await getDb();
+    await db.collection('world_data').updateOne(
+        { world_id },
+        { $set: { world_id, towns, islands, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
+
+async function getWorldData(world_id) {
+    const db = await getDb();
+    return db.collection('world_data').findOne({ world_id }, { projection: { _id: 0 } });
+}
+
+async function upsertWorldMeta(world_id, players, alliances) {
+    const db = await getDb();
+    await db.collection('world_meta').updateOne(
+        { world_id },
+        { $set: { world_id, players, alliances, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
+
+async function getWorldMeta(world_id) {
+    const db = await getDb();
+    return db.collection('world_meta').findOne({ world_id }, { projection: { _id: 0 } });
+}
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
@@ -367,4 +397,8 @@ module.exports = {
     setScript,
     pushTownData,
     getTownDataByTownId,
+    upsertWorldData,
+    getWorldData,
+    upsertWorldMeta,
+    getWorldMeta,
 };
