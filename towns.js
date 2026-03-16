@@ -1,92 +1,94 @@
 'use strict';
-const fs   = require('fs');
+
+const { MongoClient } = require('mongodb');
 const path = require('path');
 
-const TOWNS_PATH    = process.env.TOWNS_FILE    || path.join(__dirname, 'A');
-const ISLANDS_PATH  = process.env.ISLANDS_FILE  || path.join(__dirname, 'B');
-const PLAYERS_PATH  = process.env.PLAYERS_FILE  || path.join(__dirname, 'C');
-const ALLIANCES_PATH= process.env.ALLIANCES_FILE|| path.join(__dirname, 'D');
-const OFFSETS_PATH  = process.env.OFFSETS_FILE  || path.join(__dirname, 'offsets.json');
+let _db = null;
 
-let townsMap    = null;  // Map<townId,    {name, island_x, island_y, slot, player_id}>
-let islandsMap  = null;  // Map<"x,y",     island_type>
-let playersMap  = null;  // Map<playerId,  {name, alliance_id}>
-let alliancesMap= null;  // Map<allianceId,{name}>
-let offsetsMap  = null;  // { [island_type]: [[ox,oy], ...] }
-
-// ── Loaders ───────────────────────────────────────────────────────────────────
-function loadOffsets() {
-    offsetsMap = JSON.parse(fs.readFileSync(OFFSETS_PATH, 'utf8'));
-    console.log(`[Towns] Loaded offsets for ${Object.keys(offsetsMap).length} island types`);
+async function getDb() {
+    if (_db) return _db;
+    const client = new MongoClient(process.env.MONGO_URI);
+    await client.connect();
+    _db = client.db('Master');
+    return _db;
 }
 
-function loadData() {
-    console.log('[Towns] Loading A and B into memory...');
+// ── In-memory cache per world — TTL 3 hours ───────────────────────────────────
+const _cache = {};
+const CACHE_TTL = 3 * 60 * 60 * 1000;
 
-    townsMap = new Map();
-    for (const line of fs.readFileSync(TOWNS_PATH, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        const p = line.split(',');
-        // A: town_id, player_id, name, island_x, island_y, slot, points
-        townsMap.set(p[0].trim(), {
-            name:     decodeURIComponent(p[2]).trim(),
-            player_id:p[1].trim(),
-            island_x: parseInt(p[3], 10),
-            island_y: parseInt(p[4], 10),
-            slot:     parseInt(p[5], 10),
+async function getWorldCache(world_id) {
+    const now = Date.now();
+    if (_cache[world_id] && now - _cache[world_id].ts < CACHE_TTL) {
+        return _cache[world_id];
+    }
+
+    const db   = await getDb();
+    const data = await db.collection('world_data').findOne({ world_id });
+    const meta = await db.collection('world_meta').findOne({ world_id });
+
+    if (!data) {
+        console.warn(`[Towns] No world_data in DB for ${world_id}`);
+        return null;
+    }
+
+    const townsMap     = new Map();
+    const islandsMap   = new Map();
+    const playersMap   = new Map();
+    const alliancesMap = new Map();
+
+    // towns: [town_id, player_id, name, island_x, island_y, slot, points]
+    for (const p of (data.towns || [])) {
+        townsMap.set(String(p[0]), {
+            name:      p[2],
+            player_id: String(p[1]),
+            island_x:  parseInt(p[3], 10),
+            island_y:  parseInt(p[4], 10),
+            slot:      parseInt(p[5], 10),
         });
     }
 
-    islandsMap = new Map();
-    for (const line of fs.readFileSync(ISLANDS_PATH, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        const p = line.split(',');
-        // B: island_id, x, y, island_type, ...
-        islandsMap.set(`${p[1].trim()},${p[2].trim()}`, parseInt(p[3], 10));
+    // islands: [island_id, x, y, island_type, ...]
+    for (const p of (data.islands || [])) {
+        islandsMap.set(`${p[1]},${p[2]}`, parseInt(p[3], 10));
     }
 
-    console.log(`[Towns] Loaded ${townsMap.size} towns, ${islandsMap.size} islands`);
-}
-
-function loadPlayers() {
-    console.log('[Towns] Loading C (players) into memory...');
-    playersMap = new Map();
-    for (const line of fs.readFileSync(PLAYERS_PATH, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        const p = line.split(',');
-        // C: player_id, name, alliance_id, points, rank, town_count
-        playersMap.set(p[0].trim(), {
-            name:       decodeURIComponent(p[1]).replace(/\+/g, ' ').trim(),
-            alliance_id:p[2].trim() || null,
+    // players: [player_id, name, alliance_id, points, rank, town_count]
+    for (const p of (meta?.players || [])) {
+        playersMap.set(String(p[0]), {
+            name:        p[1],
+            alliance_id: p[2] || null,
         });
     }
-    console.log(`[Towns] Loaded ${playersMap.size} players`);
+
+    // alliances: [alliance_id, name, ...]
+    for (const p of (meta?.alliances || [])) {
+        alliancesMap.set(String(p[0]), { name: p[1] });
+    }
+
+    _cache[world_id] = { ts: now, townsMap, islandsMap, playersMap, alliancesMap };
+    console.log(`[Towns] Cache built for ${world_id} — ${townsMap.size} towns`);
+    return _cache[world_id];
 }
 
-function loadAlliances() {
-    console.log('[Towns] Loading D (alliances) into memory...');
-    alliancesMap = new Map();
-    for (const line of fs.readFileSync(ALLIANCES_PATH, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        const p = line.split(',');
-        // D: alliance_id, name, points, town_count, member_count, rank
-        alliancesMap.set(p[0].trim(), {
-            name: decodeURIComponent(p[1]).replace(/\+/g, ' ').trim(),
-        });
-    }
-    console.log(`[Towns] Loaded ${alliancesMap.size} alliances`);
+// ── Invalidate cache for a world (called after world data update) ─────────────
+function invalidateCache(world_id) {
+    delete _cache[world_id];
+    console.log(`[Towns] Cache invalidated for ${world_id}`);
 }
 
 // ── Queries ───────────────────────────────────────────────────────────────────
-function getTownData(townId) {
-    if (!townsMap)   loadData();
-    if (!offsetsMap) loadOffsets();
 
-    const town = townsMap.get(String(townId));
+async function getTownData(world_id, townId) {
+    const offsets = require(path.join(__dirname, 'offsets.json'));
+    const cache   = await getWorldCache(world_id);
+    if (!cache) return null;
+
+    const town = cache.townsMap.get(String(townId));
     if (!town) return null;
 
-    const island_type  = islandsMap.get(`${town.island_x},${town.island_y}`) ?? null;
-    const slotOffsets  = offsetsMap[String(island_type)]?.[town.slot] ?? null;
+    const island_type = cache.islandsMap.get(`${town.island_x},${town.island_y}`) ?? null;
+    const slotOffsets = offsets[String(island_type)]?.[town.slot] ?? null;
 
     return {
         ...town,
@@ -96,41 +98,30 @@ function getTownData(townId) {
     };
 }
 
-// Given a home_town_id, returns attacker player name + alliance name
-function getAttackerInfo(townId) {
-    if (!townsMap)     loadData();
-    if (!playersMap)   loadPlayers();
-    if (!alliancesMap) loadAlliances();
+async function getAttackerInfo(world_id, townId) {
+    const cache = await getWorldCache(world_id);
+    if (!cache) return null;
 
-    const town = townsMap.get(String(townId));
+    const town = cache.townsMap.get(String(townId));
     if (!town) return null;
 
-    const player   = playersMap.get(town.player_id);
+    const player   = cache.playersMap.get(town.player_id);
     if (!player) return { town_name: town.name, player_name: null, alliance_name: null };
 
-    const alliance = player.alliance_id ? alliancesMap.get(player.alliance_id) : null;
-
+    const alliance = player.alliance_id ? cache.alliancesMap.get(player.alliance_id) : null;
     return {
-    town_name:    town.name,
-    player_name:  player.name,
-    alliance_name:alliance ? alliance.name : null,
-    alliance_id:  player.alliance_id || null,
-    player_id:    town.player_id,
-};
+        town_name:     town.name,
+        player_name:   player.name,
+        alliance_name: alliance ? alliance.name : null,
+        alliance_id:   player.alliance_id || null,
+        player_id:     town.player_id,
+    };
 }
 
-// ── File watchers (daily GitHub Actions push) ─────────────────────────────────
-fs.watch(TOWNS_PATH,     () => { console.log('[Towns] A updated'); townsMap     = null; });
-fs.watch(ISLANDS_PATH,   () => { console.log('[Towns] B updated'); islandsMap   = null; });
-fs.watch(PLAYERS_PATH,   () => { console.log('[Towns] C updated'); playersMap   = null; });
-fs.watch(ALLIANCES_PATH, () => { console.log('[Towns] D updated'); alliancesMap = null; });
-fs.watch(OFFSETS_PATH,   () => { console.log('[Towns] offsets updated'); offsetsMap = null; });
-
-
-function getAllianceById(allianceId) {
-    if (!alliancesMap) loadAlliances();
-    const a = alliancesMap.get(String(allianceId));
-    return a ? a.name : null;
+async function getAllianceById(world_id, allianceId) {
+    const cache = await getWorldCache(world_id);
+    if (!cache) return null;
+    return cache.alliancesMap.get(String(allianceId))?.name || null;
 }
 
-module.exports = { getTownData, getAttackerInfo, getAllianceById, loadData, loadOffsets, loadPlayers, loadAlliances };
+module.exports = { getTownData, getAttackerInfo, getAllianceById, invalidateCache };
