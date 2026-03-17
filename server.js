@@ -827,6 +827,18 @@ app.post('/script/activator', verifyScriptHash, async (req, res) => {
     }
 });
 
+// ── DELETE /admin/integrity/:type — reset a stored integrity hash ─────────────
+app.delete('/admin/integrity/:type', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[ADMIN INTEGRITY DELETE] Invalid admin key attempt`);
+        return res.status(403).json({ ok: false });
+    }
+    const { type } = req.params;
+    await db.deleteIntegrityHash(type);
+    console.log(`[ADMIN INTEGRITY DELETE] Hash for '${type}' deleted — will re-learn on next request`);
+    return res.json({ ok: true, deleted: type });
+});
+
 // ── POST /admin/script — upload script content to MongoDB ────────────────────
 app.post('/admin/script', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
