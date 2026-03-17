@@ -18,6 +18,38 @@ const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
 const JWT_SECRET       = process.env.JWT_SECRET || 'CHANGE_ME_LONG_RANDOM_STRING';
 const CHALLENGE_TTL_MS = 5 * 60 * 1000; // challenge codes expire after 5 min
 
+// ── RATE LIMITER ──────────────────────────────────────────────────────────────
+// Prevents abuse of /auth/challenge by limiting each player_id to
+// MAX_CHALLENGES attempts within RATE_WINDOW_MS. In-memory — resets on restart.
+// For multi-instance deployments replace with Redis.
+const MAX_CHALLENGES   = 3;
+const RATE_WINDOW_MS   = 10 * 60 * 1000; // 10 minutes
+const _challengeRates  = new Map();       // player_id → { count, reset_at }
+
+function checkChallengeRate(player_id) {
+    const now   = Date.now();
+    const entry = _challengeRates.get(player_id);
+
+    if (!entry || now > entry.reset_at) {
+        // First attempt or window expired — start fresh
+        _challengeRates.set(player_id, { count: 1, reset_at: now + RATE_WINDOW_MS });
+        return true;
+    }
+    if (entry.count >= MAX_CHALLENGES) {
+        const secs = Math.ceil((entry.reset_at - now) / 1000);
+        console.warn(`[RATE] player ${player_id} exceeded challenge limit — retry in ${secs}s`);
+        return false;
+    }
+    entry.count++;
+    return true;
+}
+
+// Purge stale rate entries every 15 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [id, e] of _challengeRates) if (now > e.reset_at) _challengeRates.delete(id);
+}, 15 * 60 * 1000);
+
 function xorHex(a, b) {
     let result = '';
     for (let i = 0; i < a.length; i++) {
@@ -448,6 +480,11 @@ app.post('/auth/challenge', async (req, res) => {
         const { player_id, world_id } = req.body;
         if (!player_id || !world_id) return res.json({ ok: false, reason: 'Missing fields' });
 
+        // ── Rate limit: max 3 challenges per player per 10 minutes ──────────
+        if (!checkChallengeRate(String(player_id))) {
+            return res.json({ ok: false, reason: 'Too many attempts — please wait before trying again' });
+        }
+
         const whitelisted = await db.isPlayerWhitelisted(String(player_id), String(world_id));
         if (!whitelisted) {
             console.warn(`[CHALLENGE] → REJECTED: player ${player_id}/${world_id} not whitelisted`);
@@ -555,8 +592,10 @@ app.post('/auth/verify-status', async (req, res) => {
 
         if (task.status === 'verified') {
             // Generate JWT on the fly — it's cheap and avoids storing tokens in DB
+            const jti          = crypto.randomBytes(16).toString('hex');
             const access_token = jwt.sign(
                 {
+                    jti,
                     player_id: String(task.player_id),
                     world_id:  String(task.world_id),
                     verified:  true,
@@ -564,7 +603,7 @@ app.post('/auth/verify-status', async (req, res) => {
                 JWT_SECRET,
                 { expiresIn: '7d' }
             );
-            console.log(`[VERIFY-STATUS] ✅ Issuing JWT for player=${task.player_id} world=${task.world_id}`);
+            console.log(`[VERIFY-STATUS] ✅ Issuing JWT jti=${jti.slice(0,8)}… for player=${task.player_id} world=${task.world_id}`);
             return res.json({ status: 'verified', access_token });
         }
 
@@ -587,6 +626,12 @@ app.post('/auth/token-check', (req, res) => {
         const payload = jwt.verify(token, JWT_SECRET);
         const match   = String(payload.player_id) === String(req.body.player_id)
                      && String(payload.world_id)  === String(req.body.world_id);
+
+        // Reject if this specific token has been revoked
+        if (match && payload.jti) {
+            const revoked = await db.isJtiRevoked(payload.jti);
+            if (revoked) return res.json({ valid: false });
+        }
 
         return res.json({ valid: match && !!payload.verified });
     } catch (e) {
@@ -747,6 +792,15 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: false });
     }
 
+    // ── 1b. Check jti blacklist ───────────────────────────────────────────
+    if (jwtPayload.jti) {
+        const revoked = await db.isJtiRevoked(jwtPayload.jti);
+        if (revoked) {
+            console.warn(`[ACTIVATOR] → REJECTED: JWT jti=${jwtPayload.jti.slice(0,8)}… is revoked`);
+            return res.json({ ok: false });
+        }
+    }
+
     // ── 2. Confirm JWT identity matches body ──────────────────────────────
     if (String(jwtPayload.player_id) !== String(player_id) ||
         String(jwtPayload.world_id)  !== String(world_id)) {
@@ -788,6 +842,32 @@ app.delete('/admin/integrity/:type', async (req, res) => {
     await db.deleteIntegrityHash(type);
     console.log(`[ADMIN INTEGRITY DELETE] Hash for '${type}' deleted — will re-learn on next request`);
     return res.json({ ok: true, deleted: type });
+});
+
+// ── POST /admin/revoke — revoke a specific player's JWT ──────────────────────
+// Supply player_id + world_id. The server reads their current JWT's jti from
+// the request, or you can supply a jti directly.
+// After revocation: heartbeat returns { ok: false }, token-check returns invalid,
+// activator rejects — player is locked out within one heartbeat cycle.
+//
+// Usage:
+//   curl -X POST https://your-server.com/admin/revoke \
+//     -H "x-admin-key: YOUR_KEY" \
+//     -H "Content-Type: application/json" \
+//     -d '{"player_id":"12345","world_id":"gr112","jti":"abc123...","exp":1234567890}'
+app.post('/admin/revoke', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[ADMIN REVOKE] Invalid admin key attempt`);
+        return res.status(403).json({ ok: false });
+    }
+    const { player_id, world_id, jti, exp } = req.body;
+    if (!player_id || !world_id || !jti) return bad(res, 'Missing player_id, world_id or jti');
+
+    // exp defaults to now + 7d if not supplied (safe upper bound)
+    const expiry = exp ?? Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+    await db.revokeJti(jti, String(player_id), String(world_id), expiry);
+    console.log(`[ADMIN REVOKE] Revoked jti=${jti.slice(0,8)}… for player=${player_id}/${world_id}`);
+    return res.json({ ok: true });
 });
 
 // ── POST /admin/script — upload script content to MongoDB ────────────────────
@@ -909,8 +989,45 @@ app.post('/auth/license', (_req, res) => {
     res.json({ ok: true, valid: true, expires: Date.now() + 86400000 });
 });
 
-app.post('/auth/heartbeat', (_req, res) => {
-    res.json({ ok: true, next_ping: 30000 + Math.floor(Math.random() * 10000) });
+// ── POST /auth/heartbeat — REAL: JWT re-validation ──────────────────────────
+// Called periodically by script2 (every ~5 min recommended).
+// Checks: JWT signature, expiry, jti blacklist, whitelist.
+// Returns { ok: false } if any check fails → script2 should stop running.
+// This means a banned/revoked player is cut off within one heartbeat interval
+// instead of waiting for the 7-day JWT expiry.
+app.post('/auth/heartbeat', async (req, res) => {
+    try {
+        const bearer = req.headers.authorization ?? '';
+        const token  = bearer.startsWith('Bearer ') ? bearer.slice(7) : null;
+        if (!token) return res.json({ ok: false, reason: 'No token' });
+
+        let payload;
+        try { payload = jwt.verify(token, JWT_SECRET); }
+        catch (e) { return res.json({ ok: false, reason: 'Invalid token' }); }
+
+        // Check jti blacklist
+        if (payload.jti) {
+            const revoked = await db.isJtiRevoked(payload.jti);
+            if (revoked) {
+                console.warn(`[HEARTBEAT] Revoked jti=${payload.jti.slice(0,8)}… for player=${payload.player_id}`);
+                return res.json({ ok: false, reason: 'Token revoked' });
+            }
+        }
+
+        // Check still whitelisted
+        const allowed = await db.isPlayerWhitelisted(String(payload.player_id), String(payload.world_id));
+        if (!allowed) {
+            console.warn(`[HEARTBEAT] Player ${payload.player_id} no longer whitelisted`);
+            return res.json({ ok: false, reason: 'Access revoked' });
+        }
+
+        const next_ping = 5 * 60 * 1000 + Math.floor(Math.random() * 30000); // ~5 min
+        return res.json({ ok: true, next_ping });
+
+    } catch (e) {
+        console.error('[HEARTBEAT] Error:', e);
+        return res.json({ ok: false, reason: 'Server error' });
+    }
 });
 
 app.post('/auth/verify_checksum', (_req, res) => {
