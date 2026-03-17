@@ -1,16 +1,22 @@
 'use strict';
-const express   = require('express');
-const cors      = require('cors');
-const db        = require('./database');
-const crypto    = require('crypto');
-const jwt       = require('jsonwebtoken');   // npm i jsonwebtoken
-const axios     = require('axios');          // npm i axios
+const express = require('express');
+const cors    = require('cors');
+const db      = require('./database');
+const crypto  = require('crypto');
+const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
 
 // ── ENV ───────────────────────────────────────────────────────────────────────
-const JWT_SECRET       = process.env.JWT_SECRET       || 'CHANGE_ME_LONG_RANDOM_STRING';
-const WATCHER_SESSION  = process.env.WATCHER_SESSION  || '';  // watcher account cookie
-const WATCHER_WORLD    = process.env.WATCHER_WORLD    || '';  // e.g. "en100"
-const CHALLENGE_TTL_MS = 5 * 60 * 1000;                       // codes expire after 5 min
+// Required in Render environment variables:
+//   JWT_SECRET          — long random string, e.g. output of: openssl rand -hex 64
+//   ADMIN_KEY           — already set
+//   AUTH_REGISTER_SECRET — already set
+//   MONGO_URI           — already set
+//
+// No longer needed (remove from Render):
+//   WATCHER_SESSION     — watcher is now a browser script, not a server HTTP call
+//   WATCHER_WORLD       — same reason
+const JWT_SECRET       = process.env.JWT_SECRET || 'CHANGE_ME_LONG_RANDOM_STRING';
+const CHALLENGE_TTL_MS = 5 * 60 * 1000; // challenge codes expire after 5 min
 
 function xorHex(a, b) {
     let result = '';
@@ -83,9 +89,11 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token', 'X-Integrity',
-                     'X-Admin-Key', 'X-Script-Hash', 'X-Script-Ver', 'X-Player-Id',
-                     'X-Challenge-Token', 'Authorization'],
+    allowedHeaders: [
+        'Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token', 'X-Integrity',
+        'X-Admin-Key', 'X-Script-Hash', 'X-Script-Ver', 'X-Player-Id',
+        'X-Challenge-Token', 'Authorization',
+    ],
 }));
 app.options('*', cors());
 app.use(express.json({
@@ -125,9 +133,9 @@ app.post('/players/push', verifyHmac, async (req, res) => {
         town_count:     b.town_count || 0,
         current_cp:     b.current_cp || 0,
         next_level_cp:  b.next_level_cp || 0,
-        troops:         typeof b.troops      === 'string' ? b.troops      : JSON.stringify(b.troops),
-        troops_in:      typeof b.troops_in   === 'string' ? b.troops_in   : JSON.stringify(b.troops_in   || {}),
-        troops_out:     typeof b.troops_out  === 'string' ? b.troops_out  : JSON.stringify(b.troops_out  || {}),
+        troops:         typeof b.troops     === 'string' ? b.troops     : JSON.stringify(b.troops),
+        troops_in:      typeof b.troops_in  === 'string' ? b.troops_in  : JSON.stringify(b.troops_in  || {}),
+        troops_out:     typeof b.troops_out === 'string' ? b.troops_out : JSON.stringify(b.troops_out || {}),
         towns_data:     townsData,
         status:         parseInt(b.status) || 3,
     });
@@ -386,24 +394,39 @@ app.post('/auth/refresh', async (req, res) => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// ── CHALLENGE-RESPONSE VERIFICATION SYSTEM ───────────────────────────────────
+// ── CHALLENGE-RESPONSE VERIFICATION SYSTEM (Polling Watcher Architecture) ────
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// Flow:
-//   1. Client   → POST /auth/challenge           → gets challenge code + challenge_token
-//   2. User renames a town to the challenge code in-game
-//   3. Client   → POST /auth/verify-rename       → sends town_id (NOT the new name)
-//   4. Server   → Watcher fetches live town name via game API independently
-//   5. Server   → cross-checks name + ownership in DB
-//   6. Client   ← { ok: true, access_token }     → JWT used as decryption key
+// New flow (replaces server-side axios watcher call):
 //
-// In-memory challenge store: { challenge_token → { code, player_id, world_id, expires_at } }
-// For multi-instance / Redis replace the Map with a shared store.
+//   1. Client   → POST /auth/challenge       → gets code + challenge_token
+//   2. User renames a town to the code in-game
+//   3. Client   → POST /auth/verify-rename   → sends town_id; server queues
+//                                               a watcher_task in MongoDB
+//                                               ← { ok: true, queued: true }
+//   4. Client polls POST /auth/verify-status every 3s
+//
+//   5. Watcher  → GET /watcher/pending (every 10s, X-Admin-Key)
+//                  ← [{ challenge_token, town_id, world_id, expected_code, player_id }]
+//   6. Watcher fetches town info via Grepolis game API (browser cookies = auth)
+//   7. Watcher  → POST /watcher/results (X-Admin-Key)
+//                  body: [{ challenge_token, town_name, town_player_id }]
+//   8. Server checks: name match + DB ownership → issues JWT → marks task verified
+//
+//   9. Client poll → { status: 'verified', access_token } → done
+//
+// Security properties:
+//   • Admin key is hardcoded in the Watcher script (Tampermonkey) — only you
+//     can run that script and send results back.
+//   • Server never trusts the name from the USER script — only from the Watcher.
+//   • The Watcher uses real browser cookies → it IS logged into the game.
+//   • Multi-world: Watcher loops over tasks of any world_id and makes
+//     cross-subdomain requests via GM_xmlhttpRequest (browser sends cookies
+//     for any grepolis.com subdomain the watcher is logged into).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const challenges = new Map();
 
-// Purge expired entries every minute to prevent memory growth
 setInterval(() => {
     const now = Date.now();
     for (const [token, entry] of challenges) {
@@ -411,54 +434,15 @@ setInterval(() => {
     }
 }, 60_000);
 
-// Generates a human-readable code — no 0/O/1/I to avoid confusion
 function generateChallengeCode() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I
     let code = 'V-';
     for (let i = 0; i < 4; i++) code += chars[crypto.randomInt(chars.length)];
-    return code; // e.g. "V-8X4K"
-}
-
-// Uses the Watcher Account (a real in-game account you control) to fetch
-// the current live name of any town without relying on the client's report.
-// Adjust the response parsing to match the exact JSON shape Grepolis returns
-// for the world you are on — inspect real network traffic to confirm.
-async function watcherFetchTownName(worldId, townId) {
-    const world = worldId.toLowerCase();
-    const url   = `https://${world}.grepolis.com/game/${world}`;
-
-    const params = new URLSearchParams({
-        action:  'info_town',
-        town_id: String(townId),
-    });
-
-    const response = await axios.post(url, params.toString(), {
-        headers: {
-            'Content-Type':      'application/x-www-form-urlencoded',
-            'Cookie':            WATCHER_SESSION,
-            'User-Agent':        'Mozilla/5.0 (compatible)',
-            'X-Requested-With':  'XMLHttpRequest',
-        },
-        timeout: 10_000,
-    });
-
-    // Grepolis typically returns:
-    //   { "json": [ { "town_id": 12345, "name": "V-8X4K", "player_id": 67890, ... } ] }
-    // Adjust the path below if your world uses a different shape.
-    const payload  = response.data;
-    const townData = Array.isArray(payload?.json) ? payload.json[0] : payload;
-    if (!townData) throw new Error('Watcher: empty response from game API');
-
-    return {
-        name:      String(townData.name      ?? '').trim(),
-        player_id: String(townData.player_id ?? '').trim(),
-        town_id:   String(townData.town_id   ?? townData.id ?? '').trim(),
-    };
+    return code;
 }
 
 // ── POST /auth/challenge ──────────────────────────────────────────────────────
-// Step 1: client requests a challenge code.
-// Returns: { ok, challenge, challenge_token }
+// Returns a challenge code and a short-lived challenge_token.
 app.post('/auth/challenge', async (req, res) => {
     try {
         const { player_id, world_id } = req.body;
@@ -490,12 +474,10 @@ app.post('/auth/challenge', async (req, res) => {
 });
 
 // ── POST /auth/verify-rename ──────────────────────────────────────────────────
-// Step 3: client reports a rename happened and sends the town_id.
-// The server performs THREE independent checks:
-//   A. challenge_token is valid and not expired
-//   B. Watcher reads the live town name — must match the challenge code
-//   C. DB confirms the town_id belongs to the claimed player_id
-// On success: issues a signed JWT and deletes the challenge (single-use).
+// Client reports a rename and sends the town_id.
+// Server validates the challenge_token, then QUEUES a watcher_task in MongoDB
+// instead of calling the game API directly. Returns { ok: true, queued: true }.
+// The client must then poll /auth/verify-status.
 app.post('/auth/verify-rename', async (req, res) => {
     try {
         const { player_id, world_id, town_id, challenge_token } = req.body;
@@ -503,7 +485,7 @@ app.post('/auth/verify-rename', async (req, res) => {
             return res.json({ ok: false, reason: 'Missing fields' });
         }
 
-        // ── CHECK A: token exists and is not expired ───────────────────────────
+        // ── Validate challenge token ──────────────────────────────────────────
         const entry = challenges.get(challenge_token);
         if (!entry) {
             console.warn(`[VERIFY-RENAME] → REJECTED: unknown challenge_token`);
@@ -519,49 +501,26 @@ app.post('/auth/verify-rename', async (req, res) => {
             return res.json({ ok: false, reason: 'Challenge mismatch' });
         }
 
-        // ── CHECK B: Watcher independently reads the live town name ───────────
-        let townData;
-        try {
-            townData = await watcherFetchTownName(world_id, town_id);
-        } catch (e) {
-            console.error('[VERIFY-RENAME] Watcher fetch failed:', e.message);
-            return res.json({ ok: false, reason: 'Could not verify rename — watcher unavailable' });
+        // ── Confirm still whitelisted ─────────────────────────────────────────
+        const whitelisted = await db.isPlayerWhitelisted(String(player_id), String(world_id));
+        if (!whitelisted) {
+            return res.json({ ok: false, reason: 'Player not whitelisted' });
         }
 
-        if (townData.name !== entry.code) {
-            console.warn(`[VERIFY-RENAME] → REJECTED: name mismatch — watcher saw "${townData.name}", expected "${entry.code}"`);
-            return res.json({ ok: false, reason: `Town name does not match. Rename a town to exactly "${entry.code}" and try again.` });
-        }
+        // ── Queue task for Watcher — consume challenge from memory ────────────
+        // Remove from in-memory map immediately so it can't be double-queued.
+        challenges.delete(challenge_token);
 
-        // ── CHECK C: Town ownership in DB ─────────────────────────────────────
-        // Cross-reference town_id → player_id in the world snapshot.
-        // Also cross-checks against what the Watcher reported.
-        const owned = await db.isPlayerWhitelisted(String(player_id), String(world_id)) &&
-                      await db.isTownOwnedBy(String(town_id), String(player_id), String(world_id));
+        await db.queueWatcherTask({
+            challenge_token,
+            town_id:       String(town_id),
+            world_id:      String(world_id),
+            expected_code: entry.code,
+            player_id:     String(player_id),
+        });
 
-        if (!owned) {
-            if (townData.player_id && townData.player_id !== String(player_id)) {
-                console.warn(`[VERIFY-RENAME] → REJECTED: watcher sees owner=${townData.player_id}, claimed=${player_id}`);
-            }
-            console.warn(`[VERIFY-RENAME] → REJECTED: town ${town_id} not owned by player ${player_id}`);
-            return res.json({ ok: false, reason: 'Town does not belong to this player' });
-        }
-
-        // ── ALL CHECKS PASSED — issue JWT ──────────────────────────────────────
-        challenges.delete(challenge_token); // single-use: consumed immediately
-
-        const access_token = jwt.sign(
-            {
-                player_id: String(player_id),
-                world_id:  String(world_id),
-                verified:  true,
-            },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-
-        console.log(`[VERIFY-RENAME] ✅ Player ${player_id} verified on world ${world_id}`);
-        return res.json({ ok: true, access_token });
+        console.log(`[VERIFY-RENAME] ⏳ Queued watcher task: challenge=${challenge_token.slice(0,8)}… town=${town_id} world=${world_id}`);
+        return res.json({ ok: true, queued: true });
 
     } catch (e) {
         console.error('[VERIFY-RENAME] Error:', e);
@@ -569,9 +528,56 @@ app.post('/auth/verify-rename', async (req, res) => {
     }
 });
 
+// ── POST /auth/verify-status ──────────────────────────────────────────────────
+// Client polls this every 3 seconds after receiving { queued: true }.
+// Returns:
+//   { status: 'pending' }                         — watcher hasn't checked yet
+//   { status: 'verified', access_token: '...' }   — success, JWT issued
+//   { status: 'failed',   reason: '...' }          — watcher found a mismatch
+//   { status: 'not_found' }                        — task expired or unknown
+app.post('/auth/verify-status', async (req, res) => {
+    try {
+        const { challenge_token, player_id, world_id } = req.body;
+        if (!challenge_token || !player_id) {
+            return res.json({ status: 'not_found' });
+        }
+
+        const task = await db.getWatcherTaskStatus(challenge_token, String(player_id));
+        if (!task) return res.json({ status: 'not_found' });
+
+        if (task.status === 'pending') {
+            return res.json({ status: 'pending' });
+        }
+
+        if (task.status === 'failed') {
+            return res.json({ status: 'failed', reason: task.reason || 'Verification failed' });
+        }
+
+        if (task.status === 'verified') {
+            // Generate JWT on the fly — it's cheap and avoids storing tokens in DB
+            const access_token = jwt.sign(
+                {
+                    player_id: String(task.player_id),
+                    world_id:  String(task.world_id),
+                    verified:  true,
+                },
+                JWT_SECRET,
+                { expiresIn: '7d' }
+            );
+            console.log(`[VERIFY-STATUS] ✅ Issuing JWT for player=${task.player_id} world=${task.world_id}`);
+            return res.json({ status: 'verified', access_token });
+        }
+
+        return res.json({ status: 'not_found' });
+
+    } catch (e) {
+        console.error('[VERIFY-STATUS] Error:', e);
+        return res.json({ status: 'not_found' });
+    }
+});
+
 // ── POST /auth/token-check ────────────────────────────────────────────────────
-// Validates a stored JWT so returning users skip the rename flow entirely.
-// Called by the userscript on startup before triggering a new challenge.
+// Returning users validate their stored JWT to skip the rename flow.
 app.post('/auth/token-check', (req, res) => {
     try {
         const bearer = req.headers.authorization ?? '';
@@ -589,18 +595,128 @@ app.post('/auth/token-check', (req, res) => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// ── SCRIPT ACTIVATOR (updated) ───────────────────────────────────────────────
+// ── WATCHER ROUTES ────────────────────────────────────────────────────────────
 // ═════════════════════════════════════════════════════════════════════════════
 //
-// CHANGED from the original:
-//   OLD key: `${player_id}:${world_id}`   ← fully public, breakable offline
-//   NEW key: the signed JWT access_token  ← requires JWT_SECRET to forge
-//
-// The script is encrypted with the JWT string itself as the AES key.
-// A forged/replayed token produces a different key → decryption → garbage.
-// Even if an attacker intercepts the ciphertext they cannot decrypt it
-// without the exact JWT, which requires knowing JWT_SECRET (server-only).
+// These two routes are ONLY called by the Watcher Tampermonkey script.
+// Both require X-Admin-Key. The key is hardcoded in the Watcher script,
+// so only you (the admin running the watcher account) can call these.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /watcher/pending ──────────────────────────────────────────────────────
+// Watcher polls this every 10 seconds.
+// Returns all tasks currently in 'pending' status.
+// Response: { ok: true, tasks: [{ challenge_token, town_id, world_id, expected_code, player_id }] }
+//
+// Multi-world: tasks from ANY world are returned. The Watcher script loops over
+// them and makes a cross-subdomain GM_xmlhttpRequest for each one. Browser cookies
+// for any grepolis.com subdomain the admin is logged into are sent automatically.
+app.get('/watcher/pending', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[WATCHER PENDING] Invalid admin key`);
+        return res.status(403).json({ ok: false });
+    }
+    try {
+        const tasks = await db.getPendingWatcherTasks();
+        // Only expose the fields the Watcher needs — don't leak expected_code
+        // unnecessarily... actually the Watcher NEEDS it to compare locally.
+        // That's fine: only the admin's browser (with ADMIN_KEY) receives this.
+        console.log(`[WATCHER PENDING] Returning ${tasks.length} pending task(s)`);
+        return res.json({ ok: true, tasks });
+    } catch (e) {
+        console.error('[WATCHER PENDING] Error:', e);
+        return res.json({ ok: false, tasks: [] });
+    }
+});
+
+// ── POST /watcher/results ─────────────────────────────────────────────────────
+// Watcher posts the live town data it fetched from the game API.
+// Body: { results: [{ challenge_token, town_name, town_player_id }] }
+//
+// For each result the server performs two checks:
+//   1. Name match — does the live town name == expected challenge code?
+//   2. Ownership  — does the DB world_data confirm town belongs to claimed player?
+// Only if both pass does the server mark the task as 'verified'.
+app.post('/watcher/results', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[WATCHER RESULTS] Invalid admin key`);
+        return res.status(403).json({ ok: false });
+    }
+
+    const { results } = req.body;
+    if (!Array.isArray(results) || results.length === 0) {
+        return res.json({ ok: true, processed: 0 });
+    }
+
+    let processed = 0;
+
+    for (const result of results) {
+        const { challenge_token, town_name, town_player_id } = result;
+        if (!challenge_token || town_name === undefined) continue;
+
+        try {
+            // Fetch the queued task to get expected_code, player_id, world_id
+            const task = await db.getWatcherTaskStatus(challenge_token, null);
+            if (!task || task.status !== 'pending') continue;
+
+            const trimmedName = String(town_name).trim();
+
+            // ── Check 1: Name matches the challenge code ───────────────────
+            if (trimmedName !== task.expected_code) {
+                console.warn(`[WATCHER RESULTS] ❌ Name mismatch for ${challenge_token.slice(0,8)}… — watcher saw "${trimmedName}", expected "${task.expected_code}"`);
+                await db.resolveWatcherTask(
+                    challenge_token,
+                    'failed',
+                    `Town name "${trimmedName}" does not match. Rename a town to exactly "${task.expected_code}" and try again.`
+                );
+                processed++;
+                continue;
+            }
+
+            // ── Check 2: Watcher-reported owner matches claimed player ─────
+            if (town_player_id && String(town_player_id) !== String(task.player_id)) {
+                console.warn(`[WATCHER RESULTS] ❌ Ownership mismatch: watcher sees owner=${town_player_id}, claimed=${task.player_id}`);
+                await db.resolveWatcherTask(
+                    challenge_token,
+                    'failed',
+                    'Town does not belong to this player (watcher check)'
+                );
+                processed++;
+                continue;
+            }
+
+            // ── Check 3: Cross-reference DB world snapshot ─────────────────
+            const owned = await db.isTownOwnedBy(task.town_id, task.player_id, task.world_id);
+            if (!owned) {
+                console.warn(`[WATCHER RESULTS] ❌ DB ownership check failed: town=${task.town_id} player=${task.player_id} world=${task.world_id}`);
+                await db.resolveWatcherTask(
+                    challenge_token,
+                    'failed',
+                    'Town does not belong to this player (DB check)'
+                );
+                processed++;
+                continue;
+            }
+
+            // ── All checks passed ──────────────────────────────────────────
+            await db.resolveWatcherTask(challenge_token, 'verified', null);
+            console.log(`[WATCHER RESULTS] ✅ Verified: player=${task.player_id} world=${task.world_id} town=${task.town_id}`);
+            processed++;
+
+        } catch (e) {
+            console.error(`[WATCHER RESULTS] Error processing ${challenge_token?.slice(0,8)}…:`, e.message);
+        }
+    }
+
+    return res.json({ ok: true, processed });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── SCRIPT ACTIVATOR ─────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Requires a verified JWT (issued after challenge-response completes).
+// Encrypts script2.js with the JWT string itself as the AES key — a forged
+// or replayed token produces a different key → decryption → garbage output.
 app.post('/script/activator', async (req, res) => {
     const { player_id, world_id } = req.body;
     console.log(`[ACTIVATOR] Request from ${player_id || 'MISSING'} / ${world_id || 'MISSING'}`);
@@ -610,7 +726,7 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: false });
     }
 
-    // ── 1. Verify the JWT in Authorization header ──────────────────────────
+    // ── 1. Verify JWT ─────────────────────────────────────────────────────
     const bearer = req.headers.authorization ?? '';
     const token  = bearer.startsWith('Bearer ') ? bearer.slice(7) : null;
     if (!token) {
@@ -631,14 +747,14 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: false });
     }
 
-    // ── 2. Confirm JWT identity matches the body ───────────────────────────
+    // ── 2. Confirm JWT identity matches body ──────────────────────────────
     if (String(jwtPayload.player_id) !== String(player_id) ||
         String(jwtPayload.world_id)  !== String(world_id)) {
         console.warn(`[ACTIVATOR] → REJECTED: JWT player/world mismatch`);
         return res.json({ ok: false });
     }
 
-    // ── 3. Confirm still whitelisted (catches mid-session revocations) ─────
+    // ── 3. Confirm still whitelisted ──────────────────────────────────────
     const allowed = await db.isPlayerWhitelisted(String(player_id), String(world_id));
     console.log(`[ACTIVATOR] Whitelist check for ${player_id}/${world_id} → ${allowed ? 'ALLOWED' : 'DENIED'}`);
     if (!allowed) {
@@ -646,20 +762,16 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: false });
     }
 
-    // ── 4. Load script and encrypt with the JWT as the AES key ────────────
+    // ── 4. Encrypt script2.js with the JWT as the AES key ────────────────
     const fs       = require('fs');
     const path     = require('path');
     const CryptoJS = require('crypto-js');
 
     try {
         const script    = fs.readFileSync(path.join(__dirname, 'script2.js'), 'utf8');
-        // Key = the full signed JWT string (e.g. "eyJhbGci...XyzABC")
-        // Unique per-user, per-session, cryptographically signed.
         const encrypted = CryptoJS.AES.encrypt(script, token).toString();
-
         console.log(`[ACTIVATOR] → SUCCESS: delivering script2 (${script.length} bytes raw → ${encrypted.length} encrypted) to player ${player_id}`);
         return res.json({ ok: true, data: encrypted });
-
     } catch (err) {
         console.error(`[ACTIVATOR] → CRASH while encrypting/delivering script2: ${err.message}`);
         return res.json({ ok: false });
@@ -687,8 +799,8 @@ app.get('/admin/script/:name', async (req, res) => {
 // ── SCRIPT MAIN ───────────────────────────────────────────────────────────────
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
-    const part_axorb  = req.headers['x-token'];
-    const clientHash  = req.headers['x-integrity'];
+    const part_axorb = req.headers['x-token'];
+    const clientHash = req.headers['x-integrity'];
 
     console.log(`[SCRIPT MAIN] Request  player=${player_id || '?'}/${world_id || '?'}   token=${part_axorb?.slice(0,8) || 'MISSING'}…   integrity=${clientHash?.slice(0,12) || 'MISSING'}`);
 
