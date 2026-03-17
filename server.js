@@ -91,7 +91,7 @@ app.use(cors({
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token', 'X-Integrity',
-        'X-Admin-Key', 'X-Script-Hash', 'X-Script-Ver', 'X-Player-Id',
+        'X-Admin-Key', 'X-Player-Id',
         'X-Challenge-Token', 'Authorization',
     ],
 }));
