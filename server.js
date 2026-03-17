@@ -426,7 +426,23 @@ app.post('/script/activator', async (req, res) => {
         return res.json({ ok: false });
     }
 });
+// ── POST /admin/script — upload script content to MongoDB ────────────────────
+app.post('/admin/script', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const { name, content } = req.body;
+    if (!name || !content) return bad(res, 'Missing name or content');
+    await db.setScript(name, content);
+    console.log(`[Admin] Script '${name}' uploaded — ${content.length} bytes`);
+    return res.json({ ok: true });
+});
 
+// ── GET /admin/script/:name — check a script exists ──────────────────────────
+app.get('/admin/script/:name', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false });
+    const script = await db.getScript(req.params.name);
+    if (!script) return res.json({ ok: false, error: 'Not found' });
+    return res.json({ ok: true, size: script.length });
+});
 // ── SCRIPT MAIN ───────────────────────────────────────────────────────────────
 app.post('/script/main', async (req, res) => {
     const { player_id, world_id } = req.body;
