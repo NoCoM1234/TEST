@@ -26,6 +26,21 @@ async function getDb() {
     await _db.collection('world_data').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_meta').createIndex({ world_id: 1 }, { unique: true });
 
+    // ── Watcher task queue ────────────────────────────────────────────────────
+    // Stores pending town-rename verification tasks for the watcher account.
+    // challenge_token is unique — one open task per challenge at a time.
+    // expires_at index allows MongoDB to auto-expire documents (TTL index).
+    await _db.collection('watcher_tasks').createIndex(
+        { challenge_token: 1 }, { unique: true }
+    );
+    await _db.collection('watcher_tasks').createIndex(
+        { status: 1 }
+    );
+    await _db.collection('watcher_tasks').createIndex(
+        // TTL: MongoDB auto-deletes documents 2 hours after expires_at
+        { expires_at: 1 }, { expireAfterSeconds: 7200 }
+    );
+
     return _db;
 }
 
@@ -46,19 +61,19 @@ async function upsertPlayer(data) {
     await db.collection('players').updateOne(
         { id: data.id, world: data.world },
         { $set: {
-            name:          data.name,
-            alliance:      data.alliance      || '',
-            cultural_level:data.cultural_level || 0,
-            town_count:    data.town_count     || 0,
-            current_cp:    data.current_cp     || 0,
-            next_level_cp: data.next_level_cp  || 0,
-            troops:        data.troops,
-            troops_in:     data.troops_in  || '{}',
-            troops_out:    data.troops_out || '{}',
-            towns_data:    data.towns_data,
-            status:        data.status         || 3,
-            status_at:     now,
-            pushed_at:     now,
+            name:           data.name,
+            alliance:       data.alliance       || '',
+            cultural_level: data.cultural_level || 0,
+            town_count:     data.town_count      || 0,
+            current_cp:     data.current_cp      || 0,
+            next_level_cp:  data.next_level_cp   || 0,
+            troops:         data.troops,
+            troops_in:      data.troops_in  || '{}',
+            troops_out:     data.troops_out || '{}',
+            towns_data:     data.towns_data,
+            status:         data.status          || 3,
+            status_at:      now,
+            pushed_at:      now,
         }},
         { upsert: true }
     );
@@ -74,7 +89,7 @@ async function updatePlayerStatus(id, world, status) {
 }
 
 async function getPlayersByWorld(world) {
-    const db = await getDb();
+    const db   = await getDb();
     const rows = await db.collection('players')
         .find({ world }, { projection: { _id: 0, towns_data: 0 } })
         .sort({ name: 1 })
@@ -147,7 +162,10 @@ async function deleteExpiredRequests() {
 
 async function isPlayerWhitelisted(player_id, world_id) {
     const db  = await getDb();
-    const row = await db.collection('whitelist').findOne({ player_id: String(player_id), world_id: String(world_id) });
+    const row = await db.collection('whitelist').findOne({
+        player_id: String(player_id),
+        world_id:  String(world_id),
+    });
     return !!row;
 }
 
@@ -155,14 +173,21 @@ async function addToWhitelist(player_id, world_id) {
     const db = await getDb();
     await db.collection('whitelist').updateOne(
         { player_id: String(player_id), world_id: String(world_id) },
-        { $set: { player_id: String(player_id), world_id: String(world_id), added_at: Math.floor(Date.now() / 1000) } },
+        { $set: {
+            player_id:  String(player_id),
+            world_id:   String(world_id),
+            added_at:   Math.floor(Date.now() / 1000),
+        }},
         { upsert: true }
     );
 }
 
 async function removeFromWhitelist(player_id, world_id) {
     const db = await getDb();
-    await db.collection('whitelist').deleteOne({ player_id: String(player_id), world_id: String(world_id) });
+    await db.collection('whitelist').deleteOne({
+        player_id: String(player_id),
+        world_id:  String(world_id),
+    });
 }
 
 async function getWhitelist() {
@@ -232,7 +257,7 @@ async function verifyToken(player_id, world_id, part_a_xor_b) {
 }
 
 async function getAuthToken(player_id, world_id) {
-    const db  = await getDb();
+    const db = await getDb();
     return db.collection('auth_tokens').findOne({ player_id, world_id });
 }
 
@@ -339,7 +364,7 @@ async function getTownDataByTownId(world_id, town_id) {
 // ── World Data ────────────────────────────────────────────────────────────────
 
 async function upsertWorldData(world_id, towns, islands) {
-    const db  = await getDb();
+    const db = await getDb();
     await db.collection('world_data').updateOne(
         { world_id },
         { $set: { world_id, towns, islands, updated_at: Math.floor(Date.now() / 1000) } },
@@ -364,6 +389,97 @@ async function upsertWorldMeta(world_id, players, alliances) {
 async function getWorldMeta(world_id) {
     const db = await getDb();
     return db.collection('world_meta').findOne({ world_id }, { projection: { _id: 0 } });
+}
+
+// ── Town Ownership ────────────────────────────────────────────────────────────
+// Checks the world_data snapshot to confirm a town_id belongs to a player_id.
+// World data format: towns array of [town_id, player_id, name, island_x, island_y, slot, points]
+// Used by /watcher/results to cross-check the Watcher's live report against DB.
+
+async function isTownOwnedBy(town_id, player_id, world_id) {
+    const db  = await getDb();
+    const row = await db.collection('world_data').findOne(
+        { world_id },
+        { projection: { _id: 0, towns: 1 } }
+    );
+    if (!row?.towns) return false;
+    // towns[0] = town_id, towns[1] = player_id
+    return row.towns.some(
+        t => String(t[0]) === String(town_id) && String(t[1]) === String(player_id)
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ── WATCHER TASK QUEUE ────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Schema for a watcher_task document:
+// {
+//   challenge_token: string  — links back to the in-memory challenge
+//   town_id:         string  — town the user claims to have renamed
+//   world_id:        string  — which Grepolis world (e.g. "en100")
+//   expected_code:   string  — the challenge code (e.g. "V-8X4K")
+//   player_id:       string  — claimed owner
+//   status:          'pending' | 'verified' | 'failed'
+//   reason:          string | null
+//   created_at:      unix seconds
+//   expires_at:      Date object (used by MongoDB TTL index)
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function queueWatcherTask({ challenge_token, town_id, world_id, expected_code, player_id }) {
+    const db  = await getDb();
+    const now = Math.floor(Date.now() / 1000);
+    // expires_at must be a Date for MongoDB TTL index to work
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await db.collection('watcher_tasks').updateOne(
+        { challenge_token },
+        { $set: {
+            challenge_token,
+            town_id:       String(town_id),
+            world_id:      String(world_id),
+            expected_code: String(expected_code),
+            player_id:     String(player_id),
+            status:        'pending',
+            reason:        null,
+            created_at:    now,
+            expires_at:    expiresAt,
+        }},
+        { upsert: true }
+    );
+}
+
+// Returns all tasks currently in 'pending' status — sent to the Watcher script.
+async function getPendingWatcherTasks() {
+    const db = await getDb();
+    return db.collection('watcher_tasks')
+        .find({ status: 'pending' }, { projection: { _id: 0 } })
+        .toArray();
+}
+
+// Called by /watcher/results after the Watcher checks a town.
+// status: 'verified' | 'failed'
+// reason: human-readable string (used for 'failed' tasks)
+async function resolveWatcherTask(challenge_token, status, reason = null) {
+    const db  = await getDb();
+    await db.collection('watcher_tasks').updateOne(
+        { challenge_token },
+        { $set: {
+            status,
+            reason,
+            resolved_at: Math.floor(Date.now() / 1000),
+        }}
+    );
+}
+
+// Called by /auth/verify-status — the client polls this to get their result.
+async function getWatcherTaskStatus(challenge_token, player_id) {
+    const db  = await getDb();
+    return db.collection('watcher_tasks').findOne(
+        { challenge_token, player_id: String(player_id) },
+        { projection: { _id: 0 } }
+    );
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
@@ -401,4 +517,10 @@ module.exports = {
     getWorldData,
     upsertWorldMeta,
     getWorldMeta,
+    // ── New: watcher system ──────────────────────────────────────────────────
+    isTownOwnedBy,
+    queueWatcherTask,
+    getPendingWatcherTasks,
+    resolveWatcherTask,
+    getWatcherTaskStatus,
 };
