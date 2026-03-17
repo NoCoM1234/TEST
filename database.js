@@ -475,11 +475,14 @@ async function resolveWatcherTask(challenge_token, status, reason = null) {
 
 // Called by /auth/verify-status — the client polls this to get their result.
 async function getWatcherTaskStatus(challenge_token, player_id) {
-    const db  = await getDb();
-    return db.collection('watcher_tasks').findOne(
-        { challenge_token, player_id: String(player_id) },
-        { projection: { _id: 0 } }
-    );
+    const db    = await getDb();
+    // When player_id is null (called from /watcher/results which has no player
+    // context), query by challenge_token only. String(null) === "null" which
+    // would never match a real player_id and silently return nothing.
+    const query = player_id != null
+        ? { challenge_token, player_id: String(player_id) }
+        : { challenge_token };
+    return db.collection('watcher_tasks').findOne(query, { projection: { _id: 0 } });
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
