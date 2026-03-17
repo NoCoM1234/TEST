@@ -111,6 +111,54 @@ async function verifyHmac(req, res, next) {
     next();
 }
 
+// ── Script hash verification middleware ───────────────────────────────────────
+// Applied to challenge-response routes. Checks X-Script-Hash against the
+// stored hash in integrity_hashes['script1'].
+//
+// Behaviour:
+//   First ever request → no hash stored → learn it, store as known-good, allow.
+//   Subsequent requests → compare incoming vs stored. Mismatch → reject.
+//   Missing/unknown header → reject immediately.
+//
+// The hash is computed from the source of three critical functions using
+// .toString() — so any modification to those functions changes the hash.
+//
+// To reset after a legitimate script update:
+//   curl -X DELETE https://your-server/admin/integrity/script1 -H "x-admin-key: KEY"
+async function verifyScriptHash(req, res, next) {
+    const tag        = `[verifyScriptHash] ${req.method} ${req.path}`;
+    const clientHash = req.headers['x-script-hash'];
+
+    if (!clientHash || clientHash === 'unknown') {
+        console.warn(`${tag} — FAIL: Missing or unknown X-Script-Hash`);
+        return res.status(401).json({ ok: false, error: 'Missing script hash' });
+    }
+
+    try {
+        const stored = await db.getIntegrityHash('script1');
+
+        if (!stored) {
+            // First ever request — learn and store this hash automatically
+            await db.setIntegrityHash('script1', clientHash);
+            console.log(`${tag} — First run: registered hash ${clientHash.slice(0,16)}…`);
+            return next();
+        }
+
+        if (stored !== clientHash) {
+            console.warn(`${tag} — TAMPER DETECTED`);
+            console.warn(`${tag}   stored : ${stored.slice(0,16)}…`);
+            console.warn(`${tag}   client : ${clientHash.slice(0,16)}…`);
+            return res.status(401).json({ ok: false, error: 'Script integrity check failed' });
+        }
+
+        return next();
+
+    } catch (e) {
+        console.error(`${tag} — DB error: ${e.message}`);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+}
+
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 const ADMIN_KEY            = process.env.ADMIN_KEY            || 'changeme';
 const { getTownData, getAttackerInfo, getAllianceById, invalidateCache } = require('./towns');
@@ -123,7 +171,7 @@ app.use(cors({
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
         'Content-Type', 'X-Timestamp', 'X-Signature', 'X-Token', 'X-Integrity',
-        'X-Admin-Key', 'X-Player-Id',
+        'X-Admin-Key', 'X-Script-Hash', 'X-Player-Id',
         'X-Challenge-Token', 'Authorization',
     ],
 }));
@@ -475,7 +523,7 @@ function generateChallengeCode() {
 
 // ── POST /auth/challenge ──────────────────────────────────────────────────────
 // Returns a challenge code and a short-lived challenge_token.
-app.post('/auth/challenge', async (req, res) => {
+app.post('/auth/challenge', verifyScriptHash, async (req, res) => {
     try {
         const { player_id, world_id } = req.body;
         if (!player_id || !world_id) return res.json({ ok: false, reason: 'Missing fields' });
@@ -515,7 +563,7 @@ app.post('/auth/challenge', async (req, res) => {
 // Server validates the challenge_token, then QUEUES a watcher_task in MongoDB
 // instead of calling the game API directly. Returns { ok: true, queued: true }.
 // The client must then poll /auth/verify-status.
-app.post('/auth/verify-rename', async (req, res) => {
+app.post('/auth/verify-rename', verifyScriptHash, async (req, res) => {
     try {
         const { player_id, world_id, town_id, challenge_token } = req.body;
         if (!player_id || !world_id || !town_id || !challenge_token) {
@@ -572,7 +620,7 @@ app.post('/auth/verify-rename', async (req, res) => {
 //   { status: 'verified', access_token: '...' }   — success, JWT issued
 //   { status: 'failed',   reason: '...' }          — watcher found a mismatch
 //   { status: 'not_found' }                        — task expired or unknown
-app.post('/auth/verify-status', async (req, res) => {
+app.post('/auth/verify-status', verifyScriptHash, async (req, res) => {
     try {
         const { challenge_token, player_id, world_id } = req.body;
         if (!challenge_token || !player_id) {
@@ -617,7 +665,7 @@ app.post('/auth/verify-status', async (req, res) => {
 
 // ── POST /auth/token-check ────────────────────────────────────────────────────
 // Returning users validate their stored JWT to skip the rename flow.
-app.post('/auth/token-check', (req, res) => {
+app.post('/auth/token-check', verifyScriptHash, async (req, res) => {
     try {
         const bearer = req.headers.authorization ?? '';
         const token  = bearer.startsWith('Bearer ') ? bearer.slice(7) : null;
@@ -762,7 +810,7 @@ app.post('/watcher/results', async (req, res) => {
 // Requires a verified JWT (issued after challenge-response completes).
 // Encrypts script2.js with the JWT string itself as the AES key — a forged
 // or replayed token produces a different key → decryption → garbage output.
-app.post('/script/activator', async (req, res) => {
+app.post('/script/activator', verifyScriptHash, async (req, res) => {
     const { player_id, world_id } = req.body;
     console.log(`[ACTIVATOR] Request from ${player_id || 'MISSING'} / ${world_id || 'MISSING'}`);
 
