@@ -16,6 +16,15 @@ async function getDb() {
     await _db.collection('players').createIndex({ id: 1, world: 1 }, { unique: true });
     await _db.collection('players').createIndex({ world: 1 });
     await _db.collection('requests').createIndex({ world: 1, expires_at: 1 });
+
+    // Drop any stale single-field unique index on player_id so that the same
+    // player can be whitelisted across multiple worlds. The correct compound
+    // index { player_id, world_id } is created immediately after.
+    try {
+        await _db.collection('whitelist').dropIndex('player_id_1');
+        console.log('[DB] Dropped stale whitelist index player_id_1');
+    } catch (_) { /* index did not exist — nothing to do */ }
+
     await _db.collection('whitelist').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
     await _db.collection('activations').createIndex({ player_id: 1, world_id: 1 });
     await _db.collection('auth_tokens').createIndex({ player_id: 1, world_id: 1 }, { unique: true });
