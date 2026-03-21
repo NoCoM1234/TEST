@@ -60,11 +60,14 @@ function xorHex(a, b) {
 
 // ── HMAC signature verification middleware ────────────────────────────────────
 async function verifyHmac(req, res, next) {
-    const tag = `[verifyHmac] ${req.method} ${req.path}`;
+    const tag    = `[verifyHmac] ${req.method} ${req.path}`;
+    const silent = SILENT_PATHS.has(req.path); // suppress success logs for high-frequency paths
     const ts  = req.headers['x-timestamp'];
     const sig = req.headers['x-signature'];
-    console.log(`${tag} — incoming request`);
-    console.log(`${tag} — headers: x-timestamp=${ts} x-signature=${sig ? sig.slice(0,8)+'...' : 'MISSING'} x-token=${req.headers['x-token'] ? req.headers['x-token'].slice(0,8)+'...' : 'MISSING'}`);
+    if (!silent) {
+        console.log(`${tag} — incoming request`);
+        console.log(`${tag} — headers: x-timestamp=${ts} x-signature=${sig ? sig.slice(0,8)+'...' : 'MISSING'} x-token=${req.headers['x-token'] ? req.headers['x-token'].slice(0,8)+'...' : 'MISSING'}`);
+    }
     if (!ts || !sig) {
         console.warn(`${tag} — FAIL: Missing x-timestamp or x-signature`);
         return res.status(401).json({ ok: false, error: 'Missing signature' });
@@ -77,7 +80,7 @@ async function verifyHmac(req, res, next) {
     }
     const player_id = String(req.body?.id || req.body?.player_id || '');
     const world_id  = String(req.body?.world || req.body?.world_id || '');
-    console.log(`${tag} — identity: player_id=${player_id} world_id=${world_id}`);
+    if (!silent) console.log(`${tag} — identity: player_id=${player_id} world_id=${world_id}`);
     if (!player_id || !world_id) {
         console.warn(`${tag} — FAIL: Missing player_id or world_id in body`);
         return res.status(401).json({ ok: false, error: 'Missing identity' });
@@ -87,7 +90,7 @@ async function verifyHmac(req, res, next) {
         console.warn(`${tag} — FAIL: No auth token found in DB for player=${player_id} world=${world_id}`);
         return res.status(401).json({ ok: false, error: 'Unauthorized' });
     }
-    console.log(`${tag} — token found in DB`);
+    if (!silent) console.log(`${tag} — token found in DB`);
     const part_axorb = req.headers['x-token'];
     if (!part_axorb) {
         console.warn(`${tag} — FAIL: Missing x-token header`);
@@ -99,7 +102,7 @@ async function verifyHmac(req, res, next) {
         console.warn(`${tag} — server computed: ${server_axorb.slice(0,8)}... client sent: ${part_axorb.slice(0,8)}...`);
         return res.status(401).json({ ok: false, error: 'Invalid token' });
     }
-    console.log(`${tag} — X-Token OK`);
+    if (!silent) console.log(`${tag} — X-Token OK`);
     const payload  = ts + (req.rawBody || JSON.stringify(req.body));
     const expected = crypto.createHmac('sha256', part_axorb).update(payload).digest('hex');
     if (expected !== sig) {
@@ -107,7 +110,7 @@ async function verifyHmac(req, res, next) {
         console.warn(`${tag} — expected: ${expected.slice(0,8)}... received: ${sig.slice(0,8)}...`);
         return res.status(401).json({ ok: false, error: 'Invalid signature' });
     }
-    console.log(`${tag} — HMAC OK — passing to handler`);
+    if (!silent) console.log(`${tag} — HMAC OK — passing to handler`);
     next();
 }
 
