@@ -181,8 +181,12 @@ app.use(express.json({
     verify: (req, _res, buf) => { req.rawBody = buf.toString(); },
 }));
 
+// Paths that fire every 60 s — skip from global request log to reduce noise
+const SILENT_PATHS = new Set(['/players/status', '/push/player/data', '/players/push']);
+
 app.use((req, _res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    if (!SILENT_PATHS.has(req.path))
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
     next();
 });
 
@@ -464,12 +468,29 @@ app.post('/auth/revoke', async (req, res) => {
 
 app.post('/auth/refresh', async (req, res) => {
     const { player_id, world_id, old_part_a, old_part_b, new_part_b } = req.body;
-    if (!player_id || !world_id || !old_part_a || !old_part_b || !new_part_b) return res.json({ ok: false });
+    console.log(`[REFRESH] player=${player_id || '?'} world=${world_id || '?'}`);
+
+    if (!player_id || !world_id || !old_part_a || !old_part_b || !new_part_b) {
+        console.warn(`[REFRESH] → REJECTED: missing fields — part_a=${!!old_part_a} part_b=${!!old_part_b} new_part_b=${!!new_part_b}`);
+        return res.json({ ok: false });
+    }
+
     const old_part_a_xor_b = xorHex(old_part_a, old_part_b);
+    console.log(`[REFRESH] Verifying token — xor prefix: ${old_part_a_xor_b.slice(0, 8)}…`);
+
     const valid = await db.verifyToken(String(player_id), String(world_id), old_part_a_xor_b);
-    if (!valid) return res.json({ ok: false });
+    if (!valid) {
+        console.warn(`[REFRESH] → REJECTED: token verification failed for ${player_id}/${world_id} — old_part_b or old_part_a is wrong`);
+        return res.json({ ok: false });
+    }
+
     const new_part_a = await db.refreshToken(String(player_id), String(world_id), new_part_b);
-    if (!new_part_a) return res.json({ ok: false });
+    if (!new_part_a) {
+        console.warn(`[REFRESH] → FAILED: refreshToken returned null for ${player_id}/${world_id}`);
+        return res.json({ ok: false });
+    }
+
+    console.log(`[REFRESH] → SUCCESS: token refreshed for ${player_id}/${world_id} — new part_a prefix: ${new_part_a.slice(0, 8)}…`);
     return res.json({ ok: true, part_a: new_part_a });
 });
 
