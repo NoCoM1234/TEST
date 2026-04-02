@@ -83,6 +83,7 @@ async function upsertPlayer(data) {
             troops_in:      data.troops_in  || '{}',
             troops_out:     data.troops_out || '{}',
             towns_data:     data.towns_data,
+            trades: data.trades || [],
             status:         data.status          || 3,
             status_at:      now,
             pushed_at:      now,
@@ -91,6 +92,22 @@ async function upsertPlayer(data) {
     );
 }
 
+async function getTradesForTown(world_id, town_id) {
+    const db   = await getDb();
+    const rows = await db.collection('town_data')
+        .find({ world_id: String(world_id) },
+              { projection: { _id: 0, trades: 1 } })
+        .toArray();
+    const result = [];
+    for (const row of rows) {
+        for (const t of (row.trades || [])) {
+            if (String(t.destination_town_id) === String(town_id)) {
+                result.push(t);
+            }
+        }
+    }
+    return result;
+}
 async function updatePlayerStatus(id, world, status) {
     const db  = await getDb();
     const now = Math.floor(Date.now() / 1000);
@@ -529,6 +546,7 @@ setInterval(cleanupStale, 86400000);
 
 module.exports = {
     upsertPlayer,
+    getTradesForTown,
     updatePlayerStatus,
     getPlayersByWorld,
     getPlayerTowns,
