@@ -1033,6 +1033,7 @@ app.post('/push/player/data', verifyHmac, async (req, res) => {
         alliance_name: b.alliance_name || '',
         favors:        b.favors || {},
         towns:         b.towns,
+        trades: Array.isArray(b.trades) ? b.trades : [],
     });
     return res.json({ ok: true });
 });
@@ -1049,7 +1050,8 @@ app.get('/town/data/:worldId/:townId', async (req, res) => {
     const now   = Math.floor(Date.now() / 1000);
     const age   = now - (data.updated_at || 0);
     const stale = age > 300;
-    return res.json({ ok: true, stale, age_seconds: age, ...data });
+    const trades = await db.getTradesForTown(worldId, townId);
+return res.json({ ok: true, stale, age_seconds: age, trades, ...data });
 });
 
 // ── DECOY endpoints ───────────────────────────────────────────────────────────
