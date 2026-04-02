@@ -83,7 +83,6 @@ async function upsertPlayer(data) {
             troops_in:      data.troops_in  || '{}',
             troops_out:     data.troops_out || '{}',
             towns_data:     data.towns_data,
-            trades: data.trades || [],
             status:         data.status          || 3,
             status_at:      now,
             pushed_at:      now,
@@ -364,6 +363,7 @@ async function pushTownData(data) {
             alliance_name: data.alliance_name,
             favors:        data.favors,
             towns:         data.towns,
+            trades:        data.trades || [],
             updated_at:    now,
         }},
         { upsert: true }
