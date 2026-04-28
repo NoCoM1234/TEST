@@ -53,13 +53,14 @@ async function getWorldCache(world_id) {
         islandsMap.set(`${p[1]},${p[2]}`, parseInt(p[3], 10));
     }
 
-    // players: [player_id, name, alliance_id, points, rank, town_count]
-    for (const p of (meta?.players || [])) {
-        playersMap.set(String(p[0]), {
-            name:        p[1],
-            alliance_id: p[2] || null,
-        });
-    }
+   // players: [player_id, name, alliance_id, points, rank, town_count]
+for (const p of (meta?.players || [])) {
+    playersMap.set(String(p[0]), {
+        name:        p[1],
+        alliance_id: p[2] || null,
+        points:      p[3] != null ? parseInt(p[3], 10) : null,   // ← new
+    });
+}
 
     // alliances: [alliance_id, name, ...]
     for (const p of (meta?.alliances || [])) {
