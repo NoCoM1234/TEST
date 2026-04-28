@@ -105,8 +105,8 @@ async function getAttackerInfo(world_id, townId) {
     const town = cache.townsMap.get(String(townId));
     if (!town) return null;
 
-    const player   = cache.playersMap.get(town.player_id);
-    if (!player) return { town_name: town.name, player_name: null, alliance_name: null };
+    const player = cache.playersMap.get(town.player_id);
+    if (!player) return { town_name: town.name, player_name: null, alliance_name: null, player_id: null, points: null };
 
     const alliance = player.alliance_id ? cache.alliancesMap.get(player.alliance_id) : null;
     return {
@@ -115,6 +115,7 @@ async function getAttackerInfo(world_id, townId) {
         alliance_name: alliance ? alliance.name : null,
         alliance_id:   player.alliance_id || null,
         player_id:     town.player_id,
+        points:        player.points ?? null,   // ← new
     };
 }
 
