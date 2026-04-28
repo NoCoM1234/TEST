@@ -1,3 +1,9 @@
+// Polyfill Web Crypto API for Node.js < 19
+const { webcrypto } = require('crypto');
+if (!globalThis.crypto) globalThis.crypto = webcrypto;
+
+'use strict';
+const express = require('express');
 'use strict';
 const express = require('express');
 const cors    = require('cors');
