@@ -1,22 +1,20 @@
 name: Fetch World Data Daily
 on:
   schedule:
-    - cron: '0 */3 * * *'  # every 3 hours
-  workflow_dispatch:        # allow manual trigger from GitHub UI
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
 
 jobs:
   fetch-world-data:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        world: [gr112,gr115,gr118,gr119,gr120]      # add more worlds here e.g. [gr112, gr113, gr114]
-      fail-fast: false      # continue other worlds if one fails
-
+        world: [gr112,gr115,gr118,gr119,gr120]
+      fail-fast: false
     steps:
       - name: Fetch and push ${{ matrix.world }}
         run: |
           echo "Fetching data for ${{ matrix.world }}..."
-
           curl -sf --max-time 30 --retry 3 \
             "https://${{ matrix.world }}.grepolis.com/data/towns.txt" -o towns.txt
           curl -sf --max-time 30 --retry 3 \
@@ -25,16 +23,16 @@ jobs:
             "https://${{ matrix.world }}.grepolis.com/data/players.txt" -o players.txt
           curl -sf --max-time 30 --retry 3 \
             "https://${{ matrix.world }}.grepolis.com/data/alliances.txt" -o alliances.txt
-
-          echo "towns:    $(wc -l < towns.txt) lines"
-          echo "islands:  $(wc -l < islands.txt) lines"
-          echo "players:  $(wc -l < players.txt) lines"
-          echo "alliances:$(wc -l < alliances.txt) lines"
-
+          curl -sf --max-time 30 --retry 3 \
+            "https://${{ matrix.world }}.grepolis.com/game/world_settings" -o world_settings.html
+          echo "towns:         $(wc -l < towns.txt) lines"
+          echo "islands:       $(wc -l < islands.txt) lines"
+          echo "players:       $(wc -l < players.txt) lines"
+          echo "alliances:     $(wc -l < alliances.txt) lines"
+          echo "world_settings fetched"
           node - << 'EOF'
           const fs    = require('fs');
           const https = require('https');
-
           const WORLD_ID  = '${{ matrix.world }}';
           const ADMIN_KEY = '${{ secrets.ADMIN_KEY }}';
           const HOST      = 'test-1i20.onrender.com';
@@ -46,15 +44,32 @@ jobs:
                   .map(l => l.split(',').map(p => decodeURIComponent(p.trim().replace(/\+/g, ' '))));
           }
 
-          const towns     = parse('towns.txt');
-          const islands   = parse('islands.txt');
-          const players   = parse('players.txt');
-          const alliances = parse('alliances.txt');
+          // Parse world settings from the HTML table
+          function parseWorldSettings(file) {
+              const html = fs.readFileSync(file, 'utf8');
+              const settings = {};
+              const rows = html.match(/<tr>[\s\S]*?<\/tr>/g) || [];
+              for (const row of rows) {
+                  const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(m =>
+                      m[1].replace(/<[^>]+>/g, '').trim()
+                  );
+                  if (cells.length === 2 && cells[0] && cells[1]) {
+                      settings[cells[0]] = cells[1];
+                  }
+              }
+              return settings;
+          }
+
+          const towns        = parse('towns.txt');
+          const islands      = parse('islands.txt');
+          const players      = parse('players.txt');
+          const alliances    = parse('alliances.txt');
+          const worldSettings = parseWorldSettings('world_settings.html');
 
           console.log(`Parsed: ${towns.length} towns, ${islands.length} islands, ${players.length} players, ${alliances.length} alliances`);
+          console.log('World settings keys:', Object.keys(worldSettings).join(', '));
 
-          const body = JSON.stringify({ world_id: WORLD_ID, towns, islands, players, alliances });
-
+          const body = JSON.stringify({ world_id: WORLD_ID, towns, islands, players, alliances, world_settings: worldSettings });
           const options = {
               hostname: HOST,
               path:     '/admin/world-data',
@@ -65,7 +80,6 @@ jobs:
                   'x-admin-key':    ADMIN_KEY,
               },
           };
-
           const req = https.request(options, res => {
               let data = '';
               res.on('data', chunk => data += chunk);
@@ -74,12 +88,10 @@ jobs:
                   if (res.statusCode !== 200) process.exit(1);
               });
           });
-
           req.on('error', err => {
               console.error('Request failed:', err.message);
               process.exit(1);
           });
-
           req.write(body);
           req.end();
           EOF
