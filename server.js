@@ -1126,7 +1126,57 @@ app.post('/admin/world-data', async (req, res) => {
     console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands`);
     return res.json({ ok: true });
 });
+// ── In your /admin/world-data POST handler, add world_settings to the upsert ─
+// Find your existing handler and add world_settings to the $set:
 
+app.post('/admin/world-data', requireAdmin, async (req, res) => {
+    try {
+        const { world_id, towns, islands, players, alliances, world_settings } = req.body;
+        if (!world_id) return res.status(400).json({ ok: false, error: 'Missing world_id' });
+
+        const db = await getDb();
+
+        // existing world_data upsert (towns + islands) — unchanged
+        await db.collection('world_data').updateOne(
+            { world_id },
+            { $set: { world_id, towns, islands, updated_at: new Date() } },
+            { upsert: true }
+        );
+
+        // existing world_meta upsert (players + alliances) — add world_settings here
+        await db.collection('world_meta').updateOne(
+            { world_id },
+            { $set: { world_id, players, alliances, world_settings: world_settings || {}, updated_at: new Date() } },
+            { upsert: true }
+        );
+
+        invalidateCache(world_id);
+        console.log(`[Admin] Updated world ${world_id} — settings keys: ${Object.keys(world_settings || {}).length}`);
+        return res.json({ ok: true });
+    } catch (e) {
+        console.error('[Admin] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// ── NEW: GET /world/settings/:worldId ─────────────────────────────────────────
+
+app.get('/world/settings/:worldId', async (req, res) => {
+    try {
+        const db   = await getDb();
+        const meta = await db.collection('world_meta').findOne(
+            { world_id: req.params.worldId },
+            { projection: { world_settings: 1, _id: 0 } }
+        );
+        if (!meta || !meta.world_settings) {
+            return res.json({ ok: false, error: 'No settings found for this world' });
+        }
+        return res.json({ ok: true, world_id: req.params.worldId, settings: meta.world_settings });
+    } catch (e) {
+        console.error('[/world/settings] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
