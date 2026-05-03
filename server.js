@@ -1113,54 +1113,22 @@ app.post('/config/fetch', (_req, res) => {
 });
 
 // ── ADMIN world data push ─────────────────────────────────────────────────────
+// AFTER:
 app.post('/admin/world-data', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
-    const { world_id, towns, islands, players, alliances } = req.body;
+    const { world_id, towns, islands, players, alliances, world_settings } = req.body;
     if (!world_id) return bad(res, 'Missing world_id');
     if (!Array.isArray(towns) || !Array.isArray(islands)) return bad(res, 'towns and islands must be arrays');
     await db.upsertWorldData(world_id, towns, islands);
     if (Array.isArray(players) && Array.isArray(alliances)) {
-        await db.upsertWorldMeta(world_id, players, alliances);
+        await db.upsertWorldMeta(world_id, players, alliances, world_settings || {});
     }
     invalidateCache(world_id);
-    console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands`);
+    console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands, settings keys: ${Object.keys(world_settings || {}).length}`);
     return res.json({ ok: true });
 });
-// ── In your /admin/world-data POST handler, add world_settings to the upsert ─
-// Find your existing handler and add world_settings to the $set:
-
-app.post('/admin/world-data', requireAdmin, async (req, res) => {
-    try {
-        const { world_id, towns, islands, players, alliances, world_settings } = req.body;
-        if (!world_id) return res.status(400).json({ ok: false, error: 'Missing world_id' });
-
-        const db = await getDb();
-
-        // existing world_data upsert (towns + islands) — unchanged
-        await db.collection('world_data').updateOne(
-            { world_id },
-            { $set: { world_id, towns, islands, updated_at: new Date() } },
-            { upsert: true }
-        );
-
-        // existing world_meta upsert (players + alliances) — add world_settings here
-        await db.collection('world_meta').updateOne(
-            { world_id },
-            { $set: { world_id, players, alliances, world_settings: world_settings || {}, updated_at: new Date() } },
-            { upsert: true }
-        );
-
-        invalidateCache(world_id);
-        console.log(`[Admin] Updated world ${world_id} — settings keys: ${Object.keys(world_settings || {}).length}`);
-        return res.json({ ok: true });
-    } catch (e) {
-        console.error('[Admin] Error:', e.message);
-        return res.status(500).json({ ok: false, error: 'Server error' });
-    }
-});
-
-// ── NEW: GET /world/settings/:worldId ─────────────────────────────────────────
-
+ 
+// ADD before the 404 handler (before line 1130):
 app.get('/world/settings/:worldId', async (req, res) => {
     try {
         const db   = await getDb();
@@ -1168,7 +1136,7 @@ app.get('/world/settings/:worldId', async (req, res) => {
             { world_id: req.params.worldId },
             { projection: { world_settings: 1, _id: 0 } }
         );
-        if (!meta || !meta.world_settings) {
+        if (!meta?.world_settings || Object.keys(meta.world_settings).length === 0) {
             return res.json({ ok: false, error: 'No settings found for this world' });
         }
         return res.json({ ok: true, world_id: req.params.worldId, settings: meta.world_settings });
