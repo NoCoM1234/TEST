@@ -406,14 +406,16 @@ async function getWorldData(world_id) {
     return db.collection('world_data').findOne({ world_id }, { projection: { _id: 0 } });
 }
 
-async function upsertWorldMeta(world_id, players, alliances) {
+// AFTER:
+async function upsertWorldMeta(world_id, players, alliances, world_settings = {}) {
     const db = await getDb();
     await db.collection('world_meta').updateOne(
         { world_id },
-        { $set: { world_id, players, alliances, updated_at: Math.floor(Date.now() / 1000) } },
+        { $set: { world_id, players, alliances, world_settings, updated_at: Math.floor(Date.now() / 1000) } },
         { upsert: true }
     );
 }
+ 
 
 async function getWorldMeta(world_id) {
     const db = await getDb();
