@@ -1131,11 +1131,7 @@ app.post('/admin/world-data', async (req, res) => {
 // ADD before the 404 handler (before line 1130):
 app.get('/world/settings/:worldId', async (req, res) => {
     try {
-        const db   = await getDb();
-        const meta = await db.collection('world_meta').findOne(
-            { world_id: req.params.worldId },
-            { projection: { world_settings: 1, _id: 0 } }
-        );
+        const meta = await db.getWorldMeta(req.params.worldId);
         if (!meta?.world_settings || Object.keys(meta.world_settings).length === 0) {
             return res.json({ ok: false, error: 'No settings found for this world' });
         }
