@@ -164,7 +164,7 @@ async function verifyScriptHash(req, res, next) {
 
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 const ADMIN_KEY            = process.env.ADMIN_KEY            || 'changeme';
-const { getTownData, getAttackerInfo, getAllianceById, invalidateCache } = require('./towns');
+const { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData } = require('./towns');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -1141,6 +1141,13 @@ app.get('/world/settings/:worldId', async (req, res) => {
         return res.status(500).json({ ok: false, error: 'Server error' });
     }
 });
+
+app.get('/map/:worldId', async (req, res) => {
+    const data = await getMapData(req.params.worldId);
+    if (!data) return res.status(404).json({ ok: false, error: 'World not found or not loaded yet' });
+    return res.json({ ok: true, world_id: req.params.worldId, ...data });
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 

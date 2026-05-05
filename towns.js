@@ -126,4 +126,26 @@ async function getAllianceById(world_id, allianceId) {
     return cache.alliancesMap.get(String(allianceId))?.name || null;
 }
 
-module.exports = { getTownData, getAttackerInfo, getAllianceById, invalidateCache };
+async function getMapData(world_id) {
+    const cache = await getWorldCache(world_id);
+    if (!cache) return null;
+
+    const towns = [];
+    for (const [id, t] of cache.townsMap) {
+        towns.push([id, t.player_id, t.name, t.island_x, t.island_y, t.slot]);
+    }
+
+    const players = {};
+    for (const [id, p] of cache.playersMap) {
+        players[id] = [p.name, p.alliance_id || '0', p.points || 0];
+    }
+
+    const alliances = {};
+    for (const [id, a] of cache.alliancesMap) {
+        alliances[id] = a.name;
+    }
+
+    return { towns, players, alliances };
+}
+
+module.exports = { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData };
