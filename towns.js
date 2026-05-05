@@ -137,7 +137,8 @@ async function getMapData(world_id) {
         const slotOffsets = island_type ? offsets[String(island_type)]?.[t.slot] : null;
         const offset_x = slotOffsets ? slotOffsets[0] : 0;
         const offset_y = slotOffsets ? slotOffsets[1] : 0;
-        towns.push([id, t.player_id, t.name, t.island_x + offset_x, t.island_y + offset_y, t.slot]);
+     
+towns.push([id, t.player_id, t.name, t.island_x, t.island_y, offset_x, offset_y, t.slot]);
     }
 
     const players = {};
