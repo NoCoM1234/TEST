@@ -130,9 +130,14 @@ async function getMapData(world_id) {
     const cache = await getWorldCache(world_id);
     if (!cache) return null;
 
+    const offsets = require(path.join(__dirname, 'offsets.json'));
     const towns = [];
     for (const [id, t] of cache.townsMap) {
-        towns.push([id, t.player_id, t.name, t.island_x, t.island_y, t.slot]);
+        const island_type = cache.islandsMap.get(`${t.island_x},${t.island_y}`) ?? null;
+        const slotOffsets = island_type ? offsets[String(island_type)]?.[t.slot] : null;
+        const offset_x = slotOffsets ? slotOffsets[0] : 0;
+        const offset_y = slotOffsets ? slotOffsets[1] : 0;
+        towns.push([id, t.player_id, t.name, t.island_x + offset_x, t.island_y + offset_y, t.slot]);
     }
 
     const players = {};
@@ -145,7 +150,13 @@ async function getMapData(world_id) {
         alliances[id] = a.name;
     }
 
-    return { towns, players, alliances };
+    const islands = [];
+    for (const [key, type] of cache.islandsMap) {
+        const [x, y] = key.split(',').map(Number);
+        islands.push([x, y, type]);
+    }
+
+    return { towns, players, alliances, islands };
 }
 
 module.exports = { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData };
