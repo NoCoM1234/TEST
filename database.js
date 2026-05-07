@@ -34,6 +34,7 @@ async function getDb() {
     await _db.collection('town_data').createIndex({ 'towns.id': 1 });
     await _db.collection('world_data').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_meta').createIndex({ world_id: 1 }, { unique: true });
+    await _db.collection('world_wonders').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('jwt_blacklist').createIndex({ jti: 1 }, { unique: true });
     // TTL index: MongoDB auto-deletes expired blacklist entries (expires_at is a Date)
     await _db.collection('jwt_blacklist').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
@@ -422,6 +423,26 @@ async function getWorldMeta(world_id) {
     return db.collection('world_meta').findOne({ world_id }, { projection: { _id: 0 } });
 }
 
+// ── World Wonders ─────────────────────────────────────────────────────────────
+
+async function upsertWorldWonders(world_id, wonders) {
+    const db = await getDb();
+    await db.collection('world_wonders').updateOne(
+        { world_id },
+        { $set: { world_id, wonders, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+}
+
+async function getWorldWonders(world_id) {
+    const db  = await getDb();
+    const row = await db.collection('world_wonders').findOne(
+        { world_id },
+        { projection: { _id: 0, wonders: 1 } }
+    );
+    return row?.wonders || null;
+}
+
 // ── Town Ownership ────────────────────────────────────────────────────────────
 // Checks the world_data snapshot to confirm a town_id belongs to a player_id.
 // World data format: towns array of [town_id, player_id, name, island_x, island_y, slot, points]
@@ -578,6 +599,8 @@ module.exports = {
     getWorldData,
     upsertWorldMeta,
     getWorldMeta,
+    upsertWorldWonders,
+    getWorldWonders,
     // ── JWT blacklist ──────────────────────────────────────────────────────────
     revokeJti,
     isJtiRevoked,
