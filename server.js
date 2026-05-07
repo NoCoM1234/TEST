@@ -1143,9 +1143,36 @@ app.get('/world/settings/:worldId', async (req, res) => {
 });
 
 app.get('/map/:worldId', async (req, res) => {
-    const data = await getMapData(req.params.worldId);
+    const worldId = req.params.worldId;
+    const data    = await getMapData(worldId);
     if (!data) return res.status(404).json({ ok: false, error: 'World not found or not loaded yet' });
-    return res.json({ ok: true, world_id: req.params.worldId, ...data });
+
+    // Attach world_type so the frontend knows which end-game mode this is
+    const meta      = await db.getWorldMeta(worldId);
+    const worldType = meta?.world_settings?.['End Game Type Key'] || null;
+
+    // Attach wonders if this is a world_wonder world
+    let wonders = null;
+    if (worldType === 'world_wonder') {
+        wonders = await db.getWorldWonders(worldId);
+    }
+
+    return res.json({ ok: true, world_id: worldId, world_type: worldType, wonders, ...data });
+});
+
+// ── POST /admin/world-wonders/:worldId ───────────────────────────────────────
+app.post('/admin/world-wonders/:worldId', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        return res.status(403).json({ ok: false, error: 'Forbidden' });
+    }
+    const { worldId } = req.params;
+    const { wonders } = req.body;
+    if (!Array.isArray(wonders) || wonders.length === 0) {
+        return bad(res, 'wonders must be a non-empty array');
+    }
+    await db.upsertWorldWonders(worldId, wonders);
+    console.log(`[Admin] World wonders updated for ${worldId} — ${wonders.length} entries`);
+    return res.json({ ok: true, count: wonders.length });
 });
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
