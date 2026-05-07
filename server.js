@@ -1157,7 +1157,13 @@ app.get('/map/:worldId', async (req, res) => {
         wonders = await db.getWorldWonders(worldId);
     }
 
-    return res.json({ ok: true, world_id: worldId, world_type: worldType, wonders, ...data });
+    // Attach temples if this is an olympus world
+    let temples = null;
+    if (worldType === 'olympus') {
+        temples = await db.getWorldTemples(worldId);
+    }
+
+    return res.json({ ok: true, world_id: worldId, world_type: worldType, wonders, temples, ...data });
 });
 
 // ── POST /admin/world-wonders/:worldId ───────────────────────────────────────
@@ -1173,6 +1179,22 @@ app.post('/admin/world-wonders/:worldId', async (req, res) => {
     await db.upsertWorldWonders(worldId, wonders);
     console.log(`[Admin] World wonders updated for ${worldId} — ${wonders.length} entries`);
     return res.json({ ok: true, count: wonders.length });
+});
+
+// ── POST /admin/world-temples/:worldId ───────────────────────────────────────
+// Accepts a batch of temples (Small OR Large tab — merges by id, never wipes).
+app.post('/admin/world-temples/:worldId', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        return res.status(403).json({ ok: false, error: 'Forbidden' });
+    }
+    const { worldId }  = req.params;
+    const { temples }  = req.body;
+    if (!Array.isArray(temples) || temples.length === 0) {
+        return bad(res, 'temples must be a non-empty array');
+    }
+    const totalCount = await db.upsertWorldTemples(worldId, temples);
+    console.log(`[Admin] Temples updated for ${worldId} — batch of ${temples.length}, total now ${totalCount}`);
+    return res.json({ ok: true, count: temples.length, replaced: temples.length, total: totalCount });
 });
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
