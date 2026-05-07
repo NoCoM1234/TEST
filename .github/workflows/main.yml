@@ -44,11 +44,47 @@ jobs:
                   .map(l => l.split(',').map(p => decodeURIComponent(p.trim().replace(/\+/g, ' '))));
           }
 
-          // Parse world settings from the HTML table
           function parseWorldSettings(file) {
               const html = fs.readFileSync(file, 'utf8');
               const settings = {};
-              const rows = html.match(/<tr>[\s\S]*?<\/tr>/g) || [];
+
+              // ── Scope to the settings panel only (avoids sidebar interference) ──
+              const panelMatch = html.match(/<ul[^>]+class="[^"]*world_settings_information[^"]*">([\s\S]*?)<\/ul>/);
+              const panel = panelMatch ? panelMatch[1] : html;
+
+              // ── World name (from header, e.g. "Himera (gr120)") ──────────────────
+              const nameMatch = panel.match(/<span class="center">\s*([\s\S]*?)\s*<\/span>/);
+              if (nameMatch) settings['World Name'] = nameMatch[1].trim();
+
+              // ── Preview fields ────────────────────────────────────────────────────
+              const previewMap = [
+                  ['world_date',     'Date'],
+                  ['world_players',  'Players'],
+                  ['starting_towns', 'Starting Towns'],
+              ];
+              for (const [cls, key] of previewMap) {
+                  const m = panel.match(new RegExp(`<div class="${cls}">\\s*([\\s\\S]*?)\\s*<\\/div>`));
+                  if (m) settings[key] = m[1].replace(/<[^>]+>/g, '').trim();
+              }
+
+              // ── End game type — wildcard suffix (world_wonder / olympus / domination / ...) ──
+              const endGameMatch = panel.match(/<div class="end_game_type_(\w+)">\s*([\s\S]*?)\s*<\/div>/);
+              if (endGameMatch) {
+                  settings['End Game Type']     = endGameMatch[2].replace(/<[^>]+>/g, '').trim();
+                  settings['End Game Type Key'] = endGameMatch[1];
+              }
+
+              // ── World description ─────────────────────────────────────────────────
+              const descMatch = panel.match(/<pre class="world_description">([\s\S]*?)<\/pre>/);
+              if (descMatch) {
+                  settings['Description'] = descMatch[1]
+                      .replace(/<br\s*\/?>/gi, '\n')
+                      .replace(/<[^>]+>/g, '')
+                      .trim();
+              }
+
+              // ── Settings table ────────────────────────────────────────────────────
+              const rows = panel.match(/<tr>[\s\S]*?<\/tr>/g) || [];
               for (const row of rows) {
                   const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(m =>
                       m[1].replace(/<[^>]+>/g, '').trim()
@@ -57,17 +93,26 @@ jobs:
                       settings[cells[0]] = cells[1];
                   }
               }
+
               return settings;
           }
 
-          const towns        = parse('towns.txt');
-          const islands      = parse('islands.txt');
-          const players      = parse('players.txt');
-          const alliances    = parse('alliances.txt');
+          const towns         = parse('towns.txt');
+          const islands       = parse('islands.txt');
+          const players       = parse('players.txt');
+          const alliances     = parse('alliances.txt');
           const worldSettings = parseWorldSettings('world_settings.html');
 
           console.log(`Parsed: ${towns.length} towns, ${islands.length} islands, ${players.length} players, ${alliances.length} alliances`);
           console.log('World settings keys:', Object.keys(worldSettings).join(', '));
+          console.log('World settings preview:', JSON.stringify({
+              'World Name':      worldSettings['World Name'],
+              'Date':            worldSettings['Date'],
+              'Players':         worldSettings['Players'],
+              'End Game Type':   worldSettings['End Game Type'],
+              'End Game Type Key': worldSettings['End Game Type Key'],
+              'Starting Towns':  worldSettings['Starting Towns'],
+          }));
 
           const body = JSON.stringify({ world_id: WORLD_ID, towns, islands, players, alliances, world_settings: worldSettings });
           const options = {
