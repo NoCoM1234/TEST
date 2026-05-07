@@ -35,6 +35,7 @@ async function getDb() {
     await _db.collection('world_data').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_meta').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_wonders').createIndex({ world_id: 1 }, { unique: true });
+    await _db.collection('world_temples').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('jwt_blacklist').createIndex({ jti: 1 }, { unique: true });
     // TTL index: MongoDB auto-deletes expired blacklist entries (expires_at is a Date)
     await _db.collection('jwt_blacklist').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
@@ -443,6 +444,39 @@ async function getWorldWonders(world_id) {
     return row?.wonders || null;
 }
 
+// ── World Temples (Olympus end-game) ──────────────────────────────────────────
+// Temples are stored as a flat array. Each push MERGES by temple id so that
+// scraping Small and Large tabs separately doesn't wipe the other batch.
+
+async function upsertWorldTemples(world_id, temples) {
+    const db  = await getDb();
+    const row = await db.collection('world_temples').findOne(
+        { world_id },
+        { projection: { _id: 0, temples: 1 } }
+    );
+
+    // Build a map of existing temples keyed by id, then overwrite with new batch
+    const existing = new Map((row?.temples || []).map(t => [t.id, t]));
+    for (const t of temples) existing.set(t.id, t);
+    const merged = [...existing.values()];
+
+    await db.collection('world_temples').updateOne(
+        { world_id },
+        { $set: { world_id, temples: merged, updated_at: Math.floor(Date.now() / 1000) } },
+        { upsert: true }
+    );
+    return merged.length;
+}
+
+async function getWorldTemples(world_id) {
+    const db  = await getDb();
+    const row = await db.collection('world_temples').findOne(
+        { world_id },
+        { projection: { _id: 0, temples: 1 } }
+    );
+    return row?.temples || null;
+}
+
 // ── Town Ownership ────────────────────────────────────────────────────────────
 // Checks the world_data snapshot to confirm a town_id belongs to a player_id.
 // World data format: towns array of [town_id, player_id, name, island_x, island_y, slot, points]
@@ -601,6 +635,8 @@ module.exports = {
     getWorldMeta,
     upsertWorldWonders,
     getWorldWonders,
+    upsertWorldTemples,
+    getWorldTemples,
     // ── JWT blacklist ──────────────────────────────────────────────────────────
     revokeJti,
     isJtiRevoked,
