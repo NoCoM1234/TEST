@@ -1197,6 +1197,43 @@ app.post('/admin/world-temples/:worldId', async (req, res) => {
     return res.json({ ok: true, count: temples.length, replaced: temples.length, total: totalCount });
 });
 
+// ── POST /admin/register ──────────────────────────────────────────────────────
+// Manually activate a player without requiring a trade.
+// Whitelists the player and issues part_a directly.
+// Body: { player_id, world_id, part_b }
+app.post('/admin/register', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) {
+        console.warn(`[ADMIN REGISTER] Invalid admin key attempt`);
+        return res.status(403).json({ ok: false, error: 'Forbidden' });
+    }
+
+    const { player_id, world_id, part_b } = req.body;
+    if (!player_id || !world_id || !part_b) {
+        return bad(res, 'Missing player_id, world_id or part_b');
+    }
+
+    // Whitelist first so challenge-response and heartbeat work immediately
+    await db.addToWhitelist(String(player_id), String(world_id));
+    console.log(`[ADMIN REGISTER] Whitelisted player=${player_id} world=${world_id}`);
+
+    // Issue part_a the same way /auth/claim does — skip the trade check entirely
+    const part_a = await db.claimActivation(
+        String(player_id),
+        String(world_id),
+        0, 0, 0,           // wood/stone/iron — zeros, no trade needed
+        String(player_id), // origin_player_id = self
+        part_b,
+    );
+
+    if (!part_a) {
+        console.warn(`[ADMIN REGISTER] claimActivation returned null for player=${player_id} world=${world_id} — already activated?`);
+        return res.json({ ok: false, error: 'claimActivation failed — player may already be activated' });
+    }
+
+    console.log(`[ADMIN REGISTER] ✅ Manually activated player=${player_id} world=${world_id} part_a=${part_a.slice(0, 8)}…`);
+    return res.json({ ok: true, part_a });
+});
+
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
