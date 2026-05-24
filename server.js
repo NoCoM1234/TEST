@@ -1216,7 +1216,17 @@ app.post('/admin/register', async (req, res) => {
     await db.addToWhitelist(String(player_id), String(world_id));
     console.log(`[ADMIN REGISTER] Whitelisted player=${player_id} world=${world_id}`);
 
-    // Issue part_a the same way /auth/claim does — skip the trade check entirely
+    // Pre-insert the activation record (normally created by /auth/register via trade)
+    await db.registerActivation({
+        player_id:        String(player_id),
+        world_id:         String(world_id),
+        wood:             0,
+        stone:            0,
+        iron:             0,
+        origin_player_id: String(player_id),
+    });
+
+    // Now claim it — same as /auth/claim does after a trade is detected
     const part_a = await db.claimActivation(
         String(player_id),
         String(world_id),
