@@ -408,6 +408,22 @@ async function getWorldData(world_id) {
     return db.collection('world_data').findOne({ world_id }, { projection: { _id: 0 } });
 }
 
+// List every world that has map data, with its end-game type (from world_meta).
+async function getWorldList() {
+    const db = await getDb();
+    const rows = await db.collection('world_data')
+        .find({}, { projection: { _id: 0, world_id: 1, updated_at: 1 } })
+        .toArray();
+    const metas = await db.collection('world_meta')
+        .find({}, { projection: { _id: 0, world_id: 1, 'world_settings.End Game Type Key': 1 } })
+        .toArray();
+    const typeByWorld = {};
+    for (const m of metas) typeByWorld[m.world_id] = m.world_settings?.['End Game Type Key'] || null;
+    return rows
+        .map(r => ({ world_id: r.world_id, end_game_type: typeByWorld[r.world_id] || null, updated_at: r.updated_at || 0 }))
+        .sort((a, b) => String(a.world_id).localeCompare(String(b.world_id)));
+}
+
 // AFTER:
 async function upsertWorldMeta(world_id, players, alliances, world_settings = {}) {
     const db = await getDb();
@@ -631,6 +647,7 @@ module.exports = {
     getTownDataByTownId,
     upsertWorldData,
     getWorldData,
+    getWorldList,
     upsertWorldMeta,
     getWorldMeta,
     upsertWorldWonders,
