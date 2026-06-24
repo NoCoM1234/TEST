@@ -1142,6 +1142,17 @@ app.get('/world/settings/:worldId', async (req, res) => {
     }
 });
 
+// List all worlds the database has (for populating the world dropdown).
+app.get('/worlds', async (_req, res) => {
+    try {
+        const worlds = await db.getWorldList();
+        return res.json({ ok: true, worlds });
+    } catch (e) {
+        console.error('[/worlds] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
 app.get('/map/:worldId', async (req, res) => {
     const worldId = req.params.worldId;
     const data    = await getMapData(worldId);
