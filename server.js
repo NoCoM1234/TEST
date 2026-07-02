@@ -1153,6 +1153,24 @@ app.post('/admin/world-data', async (req, res) => {
 });
  
 // ADD before the 404 handler (before line 1130):
+// ── One-time: compress legacy world_data documents in place ───────────────────
+// Runs ON the server (Render can already reach Atlas — no IP whitelisting
+// needed). Idempotent and admin-key protected; safe to call repeatedly.
+//   curl -X POST https://<host>/admin/migrate-world-data -H "x-admin-key: KEY"
+app.post('/admin/migrate-world-data', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    try {
+        const results = await db.migrateWorldDataCompression();
+        const migrated = results.filter(r => r.status === 'migrated');
+        const savedMb  = migrated.reduce((s, r) => s + (r.raw_mb - r.gz_mb), 0);
+        console.log(`[Admin] world_data migration: ${migrated.length} migrated, ${results.length - migrated.length} skipped, ~${savedMb.toFixed(1)} MB reclaimed`);
+        return res.json({ ok: true, saved_mb: +savedMb.toFixed(1), results });
+    } catch (e) {
+        console.error('[/admin/migrate-world-data] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
 app.get('/world/settings/:worldId', async (req, res) => {
     try {
         const meta = await db.getWorldMeta(req.params.worldId);
