@@ -396,19 +396,46 @@ async function getTownDataByTownId(world_id, town_id) {
 }
 
 // ── World Data ────────────────────────────────────────────────────────────────
+// towns/islands are stored gzip-compressed (towns_gz / islands_gz) — ~10x
+// smaller than the raw arrays. Readers transparently accept BOTH the old raw
+// format and the compressed one, so legacy documents (e.g. closed historic
+// worlds) keep working until migrated. See migrate_world_data.js.
+
+function unpackWorldField(row, name) {
+    if (!row) return [];
+    if (row[name + '_gz']) return gunzJson(row[name + '_gz']);
+    return row[name] || [];
+}
 
 async function upsertWorldData(world_id, towns, islands) {
     const db = await getDb();
     await db.collection('world_data').updateOne(
         { world_id },
-        { $set: { world_id, towns, islands, updated_at: Math.floor(Date.now() / 1000) } },
+        {
+            $set: {
+                world_id,
+                towns_gz:   gzJson(towns),
+                islands_gz: gzJson(islands),
+                updated_at: Math.floor(Date.now() / 1000),
+            },
+            // remove legacy raw arrays if this doc predates compression
+            $unset: { towns: '', islands: '' },
+        },
         { upsert: true }
     );
 }
 
+// Returns the same shape callers always got: { world_id, towns, islands, updated_at }
 async function getWorldData(world_id) {
-    const db = await getDb();
-    return db.collection('world_data').findOne({ world_id }, { projection: { _id: 0 } });
+    const db  = await getDb();
+    const row = await db.collection('world_data').findOne({ world_id }, { projection: { _id: 0 } });
+    if (!row) return null;
+    return {
+        world_id:   row.world_id,
+        towns:      unpackWorldField(row, 'towns'),
+        islands:    unpackWorldField(row, 'islands'),
+        updated_at: row.updated_at,
+    };
 }
 
 // List every world that has map data, with its end-game type (from world_meta).
@@ -505,11 +532,12 @@ async function isTownOwnedBy(town_id, player_id, world_id) {
     const db  = await getDb();
     const row = await db.collection('world_data').findOne(
         { world_id },
-        { projection: { _id: 0, towns: 1 } }
+        { projection: { _id: 0, towns: 1, towns_gz: 1 } }
     );
-    if (!row?.towns) return false;
+    const towns = unpackWorldField(row, 'towns');
+    if (!towns.length) return false;
     // towns[0] = town_id, towns[1] = player_id
-    return row.towns.some(
+    return towns.some(
         t => String(t[0]) === String(town_id) && String(t[1]) === String(player_id)
     );
 }
