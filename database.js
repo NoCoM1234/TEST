@@ -2,6 +2,7 @@
 
 const { MongoClient, ObjectId } = require('mongodb');
 const crypto = require('crypto');
+const zlib   = require('zlib');
 
 const MONGO_URI = process.env.MONGO_URI;
 let   _db       = null;
@@ -36,6 +37,8 @@ async function getDb() {
     await _db.collection('world_meta').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_wonders').createIndex({ world_id: 1 }, { unique: true });
     await _db.collection('world_temples').createIndex({ world_id: 1 }, { unique: true });
+    // History: one entry per world per UTC day (keyframe or diff)
+    await _db.collection('world_history').createIndex({ world_id: 1, date: 1 }, { unique: true });
     await _db.collection('jwt_blacklist').createIndex({ jti: 1 }, { unique: true });
     // TTL index: MongoDB auto-deletes expired blacklist entries (expires_at is a Date)
     await _db.collection('jwt_blacklist').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
@@ -587,6 +590,270 @@ async function getWatcherTaskStatus(challenge_token, player_id) {
     return db.collection('watcher_tasks').findOne(query, { projection: { _id: 0 } });
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ── WORLD HISTORY (time machine) ──────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Stores one entry per world per UTC day so the map renderer can scrub back in
+// time. Storage is keyframe + deltas (like video compression):
+//
+//   type: 'keyframe' — full gzipped snapshot { towns, players, alliances }
+//   type: 'diff'     — gzipped delta against the PREVIOUS RECORDED day
+//
+// Snapshots are stored in the exact /map/:worldId format the frontend already
+// consumes (8-field town rows, players/alliances maps), so the client can
+// apply diffs and reuse its existing parsing code unchanged.
+//
+// IMPORTANT: diffs chain against the last *recorded* history state, not the
+// live world_data doc (which is refreshed every 3h). saveWorldHistory
+// reconstructs the last recorded day before diffing — this keeps the chain
+// consistent no matter how many intraday pushes happen.
+//
+// Islands are deliberately excluded — they never change.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const KEYFRAME_INTERVAL_DAYS = 30;
+
+function utcDateString(ts = Date.now()) {
+    return new Date(ts).toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
+
+function gzJson(obj) {
+    return zlib.gzipSync(Buffer.from(JSON.stringify(obj)), { level: 9 });
+}
+
+function gunzJson(bin) {
+    // Mongo driver returns a Binary object — .buffer is the underlying bytes
+    const buf = Buffer.isBuffer(bin) ? bin : Buffer.from(bin.buffer);
+    return JSON.parse(zlib.gunzipSync(buf).toString());
+}
+
+// ── Diff helpers ──────────────────────────────────────────────────────────────
+// Town rows are arrays [id, player_id, name, island_x, island_y, off_x, off_y, slot]
+// keyed by id (index 0). Changed entries store only { arrayIndex: newValue }.
+
+function diffTownRows(oldRows, newRows) {
+    const oldMap = new Map((oldRows || []).map(t => [String(t[0]), t]));
+    const added = [], removed = [], changed = {};
+    const seen = new Set();
+    for (const t of (newRows || [])) {
+        const id = String(t[0]);
+        seen.add(id);
+        const o = oldMap.get(id);
+        if (!o) { added.push(t); continue; }
+        const ch = {};
+        const len = Math.max(t.length, o.length);
+        for (let i = 1; i < len; i++) if (t[i] !== o[i]) ch[i] = t[i];
+        if (Object.keys(ch).length) changed[id] = ch;
+    }
+    for (const id of oldMap.keys()) if (!seen.has(id)) removed.push(id);
+    return { added, removed, changed };
+}
+
+// players: { id: [name, alliance_id, points] } — array values, per-index diff
+// alliances: { id: name } — scalar values, whole-value diff
+function diffKeyedMap(oldObj, newObj) {
+    oldObj = oldObj || {}; newObj = newObj || {};
+    const added = {}, removed = [], changed = {};
+    for (const id in newObj) {
+        if (!(id in oldObj)) { added[id] = newObj[id]; continue; }
+        const o = oldObj[id], n = newObj[id];
+        if (Array.isArray(n) && Array.isArray(o)) {
+            const ch = {};
+            const len = Math.max(n.length, o.length);
+            for (let i = 0; i < len; i++) if (n[i] !== o[i]) ch[i] = n[i];
+            if (Object.keys(ch).length) changed[id] = ch;
+        } else if (n !== o) {
+            changed[id] = n;
+        }
+    }
+    for (const id in oldObj) if (!(id in newObj)) removed.push(id);
+    return { added, removed, changed };
+}
+
+function diffSnapshots(oldSnap, newSnap) {
+    return {
+        towns:     diffTownRows(oldSnap.towns, newSnap.towns),
+        players:   diffKeyedMap(oldSnap.players, newSnap.players),
+        alliances: diffKeyedMap(oldSnap.alliances, newSnap.alliances),
+    };
+}
+
+function diffIsEmpty(d) {
+    const e = s => !s.added.length && !s.removed.length && !Object.keys(s.changed).length;
+    const eo = s => !Object.keys(s.added).length && !s.removed.length && !Object.keys(s.changed).length;
+    return e(d.towns) && eo(d.players) && eo(d.alliances);
+}
+
+// ── Apply helpers (server-side reconstruction) ────────────────────────────────
+
+function applyTownsDiff(rows, d) {
+    const map = new Map((rows || []).map(t => [String(t[0]), t]));
+    for (const id of d.removed) map.delete(String(id));
+    for (const id in d.changed) {
+        const t = map.get(String(id));
+        if (!t) continue;
+        const copy = t.slice();
+        for (const i in d.changed[id]) copy[Number(i)] = d.changed[id][i];
+        map.set(String(id), copy);
+    }
+    for (const t of d.added) map.set(String(t[0]), t);
+    return [...map.values()];
+}
+
+function applyKeyedDiff(obj, d) {
+    const out = { ...(obj || {}) };
+    for (const id of d.removed) delete out[id];
+    for (const id in d.changed) {
+        const ch = d.changed[id];
+        if (Array.isArray(out[id]) && ch && typeof ch === 'object' && !Array.isArray(ch)) {
+            const arr = out[id].slice();
+            for (const i in ch) arr[Number(i)] = ch[i];
+            out[id] = arr;
+        } else {
+            out[id] = ch;
+        }
+    }
+    for (const id in d.added) out[id] = d.added[id];
+    return out;
+}
+
+function applySnapshotDiff(state, diff) {
+    return {
+        towns:     applyTownsDiff(state.towns, diff.towns),
+        players:   applyKeyedDiff(state.players, diff.players),
+        alliances: applyKeyedDiff(state.alliances, diff.alliances),
+    };
+}
+
+// Reconstruct the world state as of `date` (inclusive). Returns the state at
+// the latest recorded day <= date, or null if history starts after `date`.
+async function reconstructWorldAtDate(world_id, date) {
+    const db  = await getDb();
+    const col = db.collection('world_history');
+    const kf  = await col.find({ world_id, type: 'keyframe', date: { $lte: date } })
+        .sort({ date: -1 }).limit(1).toArray();
+    if (!kf.length) return null;
+
+    let state = gunzJson(kf[0].data);
+    const diffs = await col.find({ world_id, type: 'diff', date: { $gt: kf[0].date, $lte: date } })
+        .sort({ date: 1 })
+        .toArray();
+    for (const row of diffs) state = applySnapshotDiff(state, gunzJson(row.data));
+    return state;
+}
+
+// Called from /admin/world-data after the live data has been updated.
+// snapshot = { towns, players, alliances } in /map format.
+// Records at most one entry per world per UTC day (first push of the day wins).
+async function saveWorldHistory(world_id, snapshot) {
+    const db   = await getDb();
+    const col  = db.collection('world_history');
+    const date = utcDateString();
+
+    const existing = await col.findOne({ world_id, date }, { projection: { _id: 1 } });
+    if (existing) return { saved: false, reason: 'already-recorded', date };
+
+    const clean = {
+        towns:     snapshot.towns     || [],
+        players:   snapshot.players   || {},
+        alliances: snapshot.alliances || {},
+    };
+
+    // Days since last keyframe decides keyframe vs diff
+    const lastKf = await col.find({ world_id, type: 'keyframe', date: { $lt: date } })
+        .sort({ date: -1 }).limit(1).toArray();
+
+    let type, payload;
+    if (!lastKf.length) {
+        type = 'keyframe';
+        payload = clean;
+    } else {
+        const daysSinceKf = Math.round((Date.parse(date) - Date.parse(lastKf[0].date)) / 86400000);
+        if (daysSinceKf >= KEYFRAME_INTERVAL_DAYS) {
+            type = 'keyframe';
+            payload = clean;
+        } else {
+            const prevState = await reconstructWorldAtDate(world_id, date); // latest recorded < today
+            if (!prevState) { type = 'keyframe'; payload = clean; }
+            else {
+                type = 'diff';
+                payload = diffSnapshots(prevState, clean);
+                // Still store empty diffs — they mark the day as recorded.
+            }
+        }
+    }
+
+    const data = gzJson(payload);
+    try {
+        await col.insertOne({
+            world_id,
+            date,
+            type,
+            data,
+            gz_bytes:   data.length,
+            created_at: Math.floor(Date.now() / 1000),
+        });
+    } catch (e) {
+        if (e.code === 11000) return { saved: false, reason: 'already-recorded', date }; // race with parallel push
+        throw e;
+    }
+    return { saved: true, date, type, bytes: data.length };
+}
+
+// List of recorded days (small — dates + types only), oldest first.
+async function getHistoryDates(world_id) {
+    const db   = await getDb();
+    const rows = await db.collection('world_history')
+        .find({ world_id }, { projection: { _id: 0, date: 1, type: 1, gz_bytes: 1 } })
+        .sort({ date: 1 })
+        .toArray();
+    return rows;
+}
+
+// Range fetch for client-side scrubbing:
+// returns { base: { date, state }, diffs: [step, ...] } covering [from, to].
+// `base` is the reconstructed state at the latest recorded day <= from.
+// Each step is { date, diff } OR { date, keyframe } — keyframes recorded
+// mid-range are sent as full states the client swaps in wholesale, because
+// the day after a keyframe chains against the keyframe, not the prior diff.
+async function getHistoryRange(world_id, from, to) {
+    const db  = await getDb();
+    const col = db.collection('world_history');
+
+    const kf = await col.find({ world_id, type: 'keyframe', date: { $lte: from } })
+        .sort({ date: -1 }).limit(1).toArray();
+
+    // If no keyframe before `from`, fall back to the earliest keyframe
+    const anchor = kf.length
+        ? kf[0]
+        : (await col.find({ world_id, type: 'keyframe' }).sort({ date: 1 }).limit(1).toArray())[0];
+    if (!anchor) return null;
+
+    let baseState = gunzJson(anchor.data);
+    let baseDate  = anchor.date;
+
+    const rows = await col.find({ world_id, date: { $gt: anchor.date, $lte: to } })
+        .sort({ date: 1 })
+        .toArray();
+
+    // Fold steps up to `from` into the base so the client only holds
+    // [from, to]; keep the rest as individual scrub steps.
+    const diffs = [];
+    for (const row of rows) {
+        const payload = gunzJson(row.data);
+        if (row.date <= from) {
+            baseState = row.type === 'keyframe' ? payload : applySnapshotDiff(baseState, payload);
+            baseDate  = row.date;
+        } else if (row.type === 'keyframe') {
+            diffs.push({ date: row.date, keyframe: payload });
+        } else {
+            diffs.push({ date: row.date, diff: payload });
+        }
+    }
+    return { base: { date: baseDate, state: baseState }, diffs };
+}
+
 // ── JWT Blacklist ─────────────────────────────────────────────────────────────
 // Revoked JTIs are stored here so tokens can be killed before natural expiry.
 // MongoDB TTL index auto-cleans entries once the original token would have expired.
@@ -654,6 +921,11 @@ module.exports = {
     getWorldWonders,
     upsertWorldTemples,
     getWorldTemples,
+    // ── World history (time machine) ───────────────────────────────────────────
+    saveWorldHistory,
+    getHistoryDates,
+    getHistoryRange,
+    reconstructWorldAtDate,
     // ── JWT blacklist ──────────────────────────────────────────────────────────
     revokeJti,
     isJtiRevoked,
