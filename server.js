@@ -1,6 +1,7 @@
 'use strict';
 const express = require('express');
 const cors    = require('cors');
+const compression = require('compression'); // npm i compression
 const db      = require('./database');
 const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
@@ -167,6 +168,10 @@ const ADMIN_KEY            = process.env.ADMIN_KEY            || 'changeme';
 const { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData } = require('./towns');
 
 const app  = express();
+
+// Gzip all HTTP responses (big win for /map and /history JSON payloads;
+// clients that don't send Accept-Encoding: gzip get plain responses).
+app.use(compression());
 const PORT = process.env.PORT || 3000;
 
 app.use(cors({
