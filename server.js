@@ -1125,6 +1125,25 @@ app.post('/admin/world-data', async (req, res) => {
     }
     invalidateCache(world_id);
     console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands, settings keys: ${Object.keys(world_settings || {}).length}`);
+
+    // ── History capture: first push of each UTC day becomes that day's snapshot.
+    // getMapData is called AFTER upsert+invalidate so we diff the transformed
+    // /map format (8-field towns, players/alliances maps) that the frontend
+    // consumes. saveWorldHistory no-ops if today is already recorded.
+    try {
+        const snap = await getMapData(world_id);
+        if (snap) {
+            const r = await db.saveWorldHistory(world_id, {
+                towns:     snap.towns,
+                players:   snap.players,
+                alliances: snap.alliances,
+            });
+            if (r.saved) console.log(`[History] ${world_id} ${r.date} recorded as ${r.type} (${(r.bytes / 1024).toFixed(1)} KB gz)`);
+        }
+    } catch (e) {
+        console.error(`[History] Capture failed for ${world_id}:`, e.message);
+    }
+
     return res.json({ ok: true });
 });
  
@@ -1149,6 +1168,51 @@ app.get('/worlds', async (_req, res) => {
         return res.json({ ok: true, worlds });
     } catch (e) {
         console.error('[/worlds] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// ── History: list of recorded days for a world (tiny payload) ─────────────────
+app.get('/history/:worldId/dates', async (req, res) => {
+    try {
+        const dates = await db.getHistoryDates(req.params.worldId);
+        return res.json({ ok: true, world_id: req.params.worldId, dates });
+    } catch (e) {
+        console.error('[/history/dates] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// ── History: base state + diff chain for client-side scrubbing ────────────────
+// GET /history/:worldId/range?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Returns { base: { date, state }, diffs: [{ date, diff }] }. The frontend
+// applies diffs locally so stepping between days needs no further requests.
+app.get('/history/:worldId/range', async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+        if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '') || from > to) {
+            return bad(res, 'from/to must be YYYY-MM-DD with from <= to');
+        }
+        const range = await db.getHistoryRange(req.params.worldId, from, to);
+        if (!range) return res.status(404).json({ ok: false, error: 'No history recorded for this world yet' });
+        return res.json({ ok: true, world_id: req.params.worldId, ...range });
+    } catch (e) {
+        console.error('[/history/range] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// ── History: single reconstructed day in /map format (convenience) ────────────
+app.get('/history/:worldId/:date', async (req, res) => {
+    try {
+        const { worldId, date } = req.params;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad(res, 'date must be YYYY-MM-DD');
+        const state = await db.reconstructWorldAtDate(worldId, date);
+        if (!state) return res.status(404).json({ ok: false, error: 'No history at or before this date' });
+        return res.json({ ok: true, world_id: worldId, date, ...state });
+    } catch (e) {
+        console.error('[/history/:date] Error:', e.message);
         return res.status(500).json({ ok: false, error: 'Server error' });
     }
 });
