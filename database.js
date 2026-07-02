@@ -438,6 +438,41 @@ async function getWorldData(world_id) {
     };
 }
 
+// Server-side one-time migration for POST /admin/migrate-world-data.
+// Converts legacy raw towns/islands documents to the compressed format.
+// Idempotent: already-compressed documents are skipped. Processes one
+// document at a time to keep memory low on small hosts.
+async function migrateWorldDataCompression() {
+    const db  = await getDb();
+    const col = db.collection('world_data');
+    const results = [];
+    const cursor = col.find({}, { projection: { world_id: 1, towns: 1, islands: 1 } });
+    for await (const doc of cursor) {
+        const hasRaw = Array.isArray(doc.towns) || Array.isArray(doc.islands);
+        if (!hasRaw) {
+            results.push({ world_id: doc.world_id, status: 'already-compressed' });
+            continue;
+        }
+        const towns   = doc.towns   || [];
+        const islands = doc.islands || [];
+        const rawBytes   = JSON.stringify(towns).length + JSON.stringify(islands).length;
+        const towns_gz   = gzJson(towns);
+        const islands_gz = gzJson(islands);
+        await col.updateOne(
+            { _id: doc._id },
+            { $set: { towns_gz, islands_gz }, $unset: { towns: '', islands: '' } }
+        );
+        results.push({
+            world_id: doc.world_id,
+            status:   'migrated',
+            raw_mb:   +(rawBytes / 1048576).toFixed(2),
+            gz_mb:    +((towns_gz.length + islands_gz.length) / 1048576).toFixed(2),
+            towns:    towns.length,
+        });
+    }
+    return results;
+}
+
 // List every world that has map data, with its end-game type (from world_meta).
 async function getWorldList() {
     const db = await getDb();
@@ -949,6 +984,7 @@ module.exports = {
     getWorldWonders,
     upsertWorldTemples,
     getWorldTemples,
+    migrateWorldDataCompression,
     // ── World history (time machine) ───────────────────────────────────────────
     saveWorldHistory,
     getHistoryDates,
