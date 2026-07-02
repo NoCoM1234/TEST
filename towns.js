@@ -2,6 +2,19 @@
 
 const { MongoClient } = require('mongodb');
 const path = require('path');
+const zlib = require('zlib');
+
+// world_data stores towns/islands gzip-compressed (towns_gz / islands_gz).
+// This helper accepts both the compressed and the legacy raw format.
+function unpackWorldField(row, name) {
+    if (!row) return [];
+    if (row[name + '_gz']) {
+        const bin = row[name + '_gz'];
+        const buf = Buffer.isBuffer(bin) ? bin : Buffer.from(bin.buffer);
+        return JSON.parse(zlib.gunzipSync(buf).toString());
+    }
+    return row[name] || [];
+}
 
 let _db = null;
 
@@ -37,8 +50,11 @@ async function getWorldCache(world_id) {
     const playersMap   = new Map();
     const alliancesMap = new Map();
 
+    const rawTowns   = unpackWorldField(data, 'towns');
+    const rawIslands = unpackWorldField(data, 'islands');
+
     // towns: [town_id, player_id, name, island_x, island_y, slot, points]
-    for (const p of (data.towns || [])) {
+    for (const p of rawTowns) {
         townsMap.set(String(p[0]), {
             name:      p[2],
             player_id: String(p[1]),
@@ -49,7 +65,7 @@ async function getWorldCache(world_id) {
     }
 
     // islands: [island_id, x, y, island_type, ...]
-    for (const p of (data.islands || [])) {
+    for (const p of rawIslands) {
         islandsMap.set(`${p[1]},${p[2]}`, parseInt(p[3], 10));
     }
 
