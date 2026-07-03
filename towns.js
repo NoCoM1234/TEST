@@ -61,6 +61,7 @@ async function getWorldCache(world_id) {
             island_x:  parseInt(p[3], 10),
             island_y:  parseInt(p[4], 10),
             slot:      parseInt(p[5], 10),
+            points:    p.length > 6 && p[6] != null ? parseInt(p[6], 10) : null,   // per-town points
         });
     }
 
@@ -154,7 +155,7 @@ async function getMapData(world_id) {
         const offset_x = slotOffsets ? slotOffsets[0] : 0;
         const offset_y = slotOffsets ? slotOffsets[1] : 0;
      
-towns.push([id, t.player_id, t.name, t.island_x, t.island_y, offset_x, offset_y, t.slot]);
+towns.push([id, t.player_id, t.name, t.island_x, t.island_y, offset_x, offset_y, t.slot, t.points ?? null]);
     }
 
     const players = {};
