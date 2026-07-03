@@ -1171,6 +1171,19 @@ app.post('/admin/migrate-world-data', async (req, res) => {
     }
 });
 
+// ── Read-only admin overview (powers the local dashboard tool) ────────────────
+//   curl https://<host>/admin/overview -H "x-admin-key: KEY"
+app.get('/admin/overview', async (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    try {
+        const overview = await db.getAdminOverview();
+        return res.json({ ok: true, ...overview });
+    } catch (e) {
+        console.error('[/admin/overview] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
 app.get('/world/settings/:worldId', async (req, res) => {
     try {
         const meta = await db.getWorldMeta(req.params.worldId);
