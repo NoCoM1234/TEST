@@ -316,6 +316,67 @@ async function refreshToken(player_id, world_id, new_part_b) {
     return new_part_a;
 }
 
+// ── Admin overview (read-only dashboard) ──────────────────────────────────────
+// Joins auth_tokens with whitelist + pending activations for a single at-a-glance
+// snapshot. Pure reads, no mutations. Token age is derived from created_at
+// (tokens currently have no expiry field).
+async function getAdminOverview() {
+    const db = await getDb();
+    const [tokens, whitelist, activations] = await Promise.all([
+        db.collection('auth_tokens').find({}, { projection: { _id: 0, part_c: 0, token: 0 } }).toArray(),
+        db.collection('whitelist').find({}, { projection: { _id: 0 } }).toArray(),
+        db.collection('activations').find({ used: false }, { projection: { _id: 0 } }).toArray(),
+    ]);
+
+    // whitelist lookup by player+world
+    const wlSet = new Set(whitelist.map(w => `${w.player_id}:${w.world_id}`));
+    const wlAddedAt = {};
+    for (const w of whitelist) wlAddedAt[`${w.player_id}:${w.world_id}`] = w.added_at || null;
+
+    const now = Math.floor(Date.now() / 1000);
+    const authed = tokens.map(t => {
+        const key = `${t.player_id}:${t.world_id}`;
+        const activatedAt = t.created_at || null;
+        return {
+            player_id:      t.player_id,
+            world_id:       t.world_id,
+            whitelisted:    wlSet.has(key),
+            activated_at:   activatedAt,
+            refreshed_at:   t.updated_at || null,
+            age_seconds:    activatedAt ? now - activatedAt : null,
+            wl_added_at:    wlAddedAt[key] || null,
+        };
+    }).sort((a, b) => String(a.world_id).localeCompare(String(b.world_id))
+                   || (b.activated_at || 0) - (a.activated_at || 0));
+
+    // whitelisted players who are NOT (yet) authed
+    const authedKeys = new Set(tokens.map(t => `${t.player_id}:${t.world_id}`));
+    const whitelistedOnly = whitelist
+        .filter(w => !authedKeys.has(`${w.player_id}:${w.world_id}`))
+        .map(w => ({ player_id: w.player_id, world_id: w.world_id, wl_added_at: w.added_at || null }))
+        .sort((a, b) => String(a.world_id).localeCompare(String(b.world_id)));
+
+    const pending = activations.map(a => ({
+        player_id:  a.player_id,
+        world_id:   a.world_id,
+        created_at: a.created_at || null,
+        age_seconds: a.created_at ? now - a.created_at : null,
+    })).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+
+    return {
+        generated_at: now,
+        counts: {
+            authed:           authed.length,
+            whitelisted:      whitelist.length,
+            whitelisted_only: whitelistedOnly.length,
+            pending:          pending.length,
+        },
+        authed,
+        whitelisted_only: whitelistedOnly,
+        pending,
+    };
+}
+
 // ── Integrity Hashes ──────────────────────────────────────────────────────────
 
 async function getIntegrityHash(type) {
@@ -968,6 +1029,7 @@ module.exports = {
     revokeToken,
     refreshToken,
     getAuthToken,
+    getAdminOverview,
     getIntegrityHash,
     setIntegrityHash,
     deleteIntegrityHash,
