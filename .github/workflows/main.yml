@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        world: [gr121,gr119,gr117,gr120,gr122]
+        world: [gr121,gr119,gr117,gr120,gr122,gr123]
       fail-fast: false
     steps:
       - name: Fetch and push ${{ matrix.world }}
