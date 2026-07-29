@@ -414,6 +414,13 @@ async function setScript(name, content) {
     );
 }
 
+// Returns the upload timestamp as a monotonic version number (0 if missing).
+async function getScriptVersion(name) {
+    const db  = await getDb();
+    const row = await db.collection('scripts').findOne({ name }, { projection: { updated_at: 1 } });
+    return row?.updated_at || 0;
+}
+
 // ── Town Data ─────────────────────────────────────────────────────────────────
 
 async function pushTownData(data) {
@@ -1035,6 +1042,7 @@ module.exports = {
     deleteIntegrityHash,
     getScript,
     setScript,
+    getScriptVersion,
     pushTownData,
     getTownDataByTownId,
     upsertWorldData,
