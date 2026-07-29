@@ -165,7 +165,7 @@ async function verifyScriptHash(req, res, next) {
 
 const AUTH_REGISTER_SECRET = process.env.AUTH_REGISTER_SECRET || 'changeme';
 const ADMIN_KEY            = process.env.ADMIN_KEY            || 'changeme';
-const { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData } = require('./towns');
+const { getTownData, getTownsBatch, getAttackerInfo, getAllianceById, invalidateCache, getMapData } = require('./towns');
 
 const app  = express();
 
@@ -265,23 +265,18 @@ app.get('/towns/:world/:townId1/:townId2', async (req, res) => {
 });
 
 // ── POST /towns/batch ─────────────────────────────────────────────────────────
+// Set owner:true in the body to also get town_name / player_name / alliance_name
+// per town. Omitting it keeps the original four-field response, so existing
+// callers are unaffected.
 app.post('/towns/batch', async (req, res) => {
-    const { world, ids } = req.body;
+    const { world, ids, owner } = req.body;
     if (!world) return bad(res, 'Missing world');
     if (!Array.isArray(ids) || ids.length === 0) return bad(res, 'Body must have ids array');
     if (ids.length > 500) return bad(res, 'Max 500 ids per request');
-    const result = {};
-    for (const id of ids) {
-        const t = await getTownData(world, String(id));
-        if (!t) continue;
-        result[String(id)] = {
-            island_x: t.island_x,
-            island_y: t.island_y,
-            offset_x: t.offset_x,
-            offset_y: t.offset_y,
-        };
-    }
-    return res.json({ ok: true, towns: result });
+
+    const towns = await getTownsBatch(world, ids, owner === true || owner === 'true');
+    if (!towns) return bad(res, `No world data for ${world}`, 404);
+    return res.json({ ok: true, towns });
 });
 
 // ── GET /attacker/:world/:townId ──────────────────────────────────────────────
