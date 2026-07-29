@@ -981,7 +981,7 @@ app.post('/script/main', async (req, res) => {
     const row = await db.getAuthToken(String(player_id), String(world_id));
     if (!row) {
         console.warn(`[SCRIPT MAIN] → REJECTED: no auth token found in DB for ${player_id}/${world_id}`);
-        return res.json({ ok: false });
+        return res.json({ ok: false, reason: 'no_server_token' });
     }
 
     const server_axorb = xorHex(row.token, row.part_c);
@@ -989,7 +989,7 @@ app.post('/script/main', async (req, res) => {
         console.warn(`[SCRIPT MAIN] → REJECTED: x-token mismatch`);
         console.warn(`[SCRIPT MAIN]   client sent : ${part_axorb.slice(0,16)}…`);
         console.warn(`[SCRIPT MAIN]   server calc : ${server_axorb.slice(0,16)}…`);
-        return res.json({ ok: false });
+        return res.json({ ok: false, reason: 'token_mismatch' });
     }
     console.log(`[SCRIPT MAIN] Token verified OK`);
 
