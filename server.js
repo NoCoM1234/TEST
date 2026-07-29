@@ -1024,6 +1024,14 @@ app.post('/script/main', async (req, res) => {
     }
 });
 
+// ── VERSION CHECK — public, returns the upload timestamp as a version ─────────
+// script3 fetches this on its first run to save a baseline, then polls it each
+// cycle and reloads when the published version is newer than that baseline.
+app.get('/script/version/:name', async (req, res) => {
+    const version = await db.getScriptVersion(req.params.name);
+    return res.json({ ok: true, version });
+});
+
 // ── Other endpoints ───────────────────────────────────────────────────────────
 app.post('/push/player/data', verifyHmac, async (req, res) => {
     const b = req.body;
