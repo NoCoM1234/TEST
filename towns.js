@@ -126,7 +126,8 @@ async function getAttackerInfo(world_id, townId) {
     const player = cache.playersMap.get(town.player_id);
     if (!player) return { town_name: town.name, player_name: null, alliance_name: null, player_id: null, points: null };
 
-    const alliance = player.alliance_id ? cache.alliancesMap.get(player.alliance_id) : null;
+    // alliancesMap is keyed with String(id), so coerce or the lookup silently misses
+    const alliance = player.alliance_id ? cache.alliancesMap.get(String(player.alliance_id)) : null;
     return {
         town_name:     town.name,
         player_name:   player.name,
@@ -135,6 +136,48 @@ async function getAttackerInfo(world_id, townId) {
         player_id:     town.player_id,
         points:        player.points ?? null,   // ← new
     };
+}
+
+// Batch town lookup. Reads the in-memory world cache once and loops, so a
+// request for hundreds of ids costs the same as one. Pass withOwner=true to
+// also resolve player + alliance for each town.
+async function getTownsBatch(world_id, ids, withOwner = false) {
+    const offsets = require(path.join(__dirname, 'offsets.json'));
+    const cache   = await getWorldCache(world_id);
+    if (!cache) return null;
+
+    const out = {};
+    for (const rawId of ids) {
+        const id   = String(rawId);
+        const town = cache.townsMap.get(id);
+        if (!town) continue;
+
+        const island_type = cache.islandsMap.get(`${town.island_x},${town.island_y}`) ?? null;
+        const slotOffsets = offsets[String(island_type)]?.[town.slot] ?? null;
+
+        const entry = {
+            island_x: town.island_x,
+            island_y: town.island_y,
+            offset_x: slotOffsets ? slotOffsets[0] : null,
+            offset_y: slotOffsets ? slotOffsets[1] : null,
+        };
+
+        if (withOwner) {
+            const player   = cache.playersMap.get(town.player_id);
+            const alliance = player && player.alliance_id
+                ? cache.alliancesMap.get(String(player.alliance_id)) : null;
+            entry.town_name     = town.name;
+            entry.player_id     = town.player_id;
+            entry.player_name   = player ? player.name : null;
+            entry.player_points = player ? (player.points ?? null) : null;
+            entry.alliance_id   = player ? (player.alliance_id || null) : null;
+            entry.alliance_name = alliance ? alliance.name : null;
+        }
+
+        out[id] = entry;
+    }
+
+    return out;
 }
 
 async function getAllianceById(world_id, allianceId) {
@@ -177,4 +220,4 @@ towns.push([id, t.player_id, t.name, t.island_x, t.island_y, offset_x, offset_y,
     return { towns, players, alliances, islands };
 }
 
-module.exports = { getTownData, getAttackerInfo, getAllianceById, invalidateCache, getMapData };
+module.exports = { getTownData, getTownsBatch, getAttackerInfo, getAllianceById, invalidateCache, getMapData };
