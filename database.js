@@ -1016,6 +1016,7 @@ getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
 
 module.exports = {
+    getDb, 
     upsertPlayer,
     getTradesForTown,
     updatePlayerStatus,
