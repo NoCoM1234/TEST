@@ -5,6 +5,7 @@ const compression = require('compression'); // npm i compression
 const db      = require('./database');
 const crypto  = require('crypto');
 const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
+const { mountSpellRoutes } = require('./spells');
 
 // ── ENV ───────────────────────────────────────────────────────────────────────
 // Required in Render environment variables:
@@ -1357,6 +1358,7 @@ app.post('/admin/register', async (req, res) => {
     console.log(`[ADMIN REGISTER] ✅ Manually activated player=${player_id} world=${world_id} part_a=${part_a.slice(0, 8)}…`);
     return res.json({ ok: true, part_a });
 });
+mountSpellRoutes(app, { verifyHmac, bad });
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
