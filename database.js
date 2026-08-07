@@ -443,18 +443,32 @@ async function getScriptVersion(name) {
 async function pushTownData(data) {
     const db  = await getDb();
     const now = Math.floor(Date.now() / 1000);
+
+    const set = {
+        player_id:     data.player_id,
+        player_name:   data.player_name,
+        world_id:      data.world_id,
+        alliance_id:   data.alliance_id,
+        alliance_name: data.alliance_name,
+        favors:        data.favors,
+        trades:        data.trades || [],
+        updated_at:    now,
+    };
+
+    // Only ship the towns array when it actually differs from last push.
+    const key  = `td:${data.player_id}:${data.world_id}`;
+    const sig  = crypto.createHash('sha1')
+                       .update(JSON.stringify(data.towns || []))
+                       .digest('hex');
+    const prev = _townsDataSigs.get(key);
+    if (!prev || prev.sig !== sig || now - prev.at > SIG_FORCE_SECONDS) {
+        set.towns = data.towns;
+        _townsDataSigs.set(key, { sig, at: now });
+    }
+
     await db.collection('town_data').updateOne(
         { player_id: data.player_id, world_id: data.world_id },
-        { $set: {
-            player_id:     data.player_id,
-            player_name:   data.player_name,
-            world_id:      data.world_id,
-            alliance_id:   data.alliance_id,
-            alliance_name: data.alliance_name,
-            favors:        data.favors,
-           trades:        data.trades || [],
-            updated_at:    now,
-        }},
+        { $set: set },
         { upsert: true }
     );
 }
