@@ -75,26 +75,40 @@ function xorHex(a, b) {
 
 // ── Players ───────────────────────────────────────────────────────────────────
 
+// key → { sig, at } — in-process, resets on restart (worst case: one full write each)
+const _townsDataSigs = new Map();
+const SIG_FORCE_SECONDS = 1800;   // re-send in full every 30 min regardless
+
 async function upsertPlayer(data) {
     const db  = await getDb();
     const now = Math.floor(Date.now() / 1000);
+    const key = `${data.id}:${data.world}`;
+
+    const set = {
+        name:           data.name,
+        alliance:       data.alliance       || '',
+        cultural_level: data.cultural_level || 0,
+        town_count:     data.town_count      || 0,
+        current_cp:     data.current_cp      || 0,
+        next_level_cp:  data.next_level_cp   || 0,
+        troops:         data.troops,
+        troops_in:      data.troops_in  || '{}',
+        troops_out:     data.troops_out || '{}',
+        status:         data.status          || 3,
+        status_at:      now,
+        pushed_at:      now,
+    };
+
+    const sig  = crypto.createHash('sha1').update(String(data.towns_data || '')).digest('hex');
+    const prev = _townsDataSigs.get(key);
+    if (!prev || prev.sig !== sig || now - prev.at > SIG_FORCE_SECONDS) {
+        set.towns_data = data.towns_data;
+        _townsDataSigs.set(key, { sig, at: now });
+    }
+
     await db.collection('players').updateOne(
         { id: data.id, world: data.world },
-        { $set: {
-            name:           data.name,
-            alliance:       data.alliance       || '',
-            cultural_level: data.cultural_level || 0,
-            town_count:     data.town_count      || 0,
-            current_cp:     data.current_cp      || 0,
-            next_level_cp:  data.next_level_cp   || 0,
-            troops:         data.troops,
-            troops_in:      data.troops_in  || '{}',
-            troops_out:     data.troops_out || '{}',
-            towns_data:     data.towns_data,
-            status:         data.status          || 3,
-            status_at:      now,
-            pushed_at:      now,
-        }},
+        { $set: set },
         { upsert: true }
     );
 }
