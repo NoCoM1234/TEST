@@ -592,7 +592,16 @@ async function upsertWorldMeta(world_id, players, alliances, world_settings = {}
     const db = await getDb();
     await db.collection('world_meta').updateOne(
         { world_id },
-        { $set: { world_id, players, alliances, world_settings, updated_at: Math.floor(Date.now() / 1000) } },
+        {
+            $set: {
+                world_id,
+                players_gz:   gzJson(players),
+                alliances_gz: gzJson(alliances),
+                world_settings,
+                updated_at:   Math.floor(Date.now() / 1000),
+            },
+            $unset: { players: '', alliances: '' },
+        },
         { upsert: true }
     );
 }
