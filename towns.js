@@ -16,16 +16,6 @@ function unpackWorldField(row, name) {
     return row[name] || [];
 }
 
-let _db = null;
-
-async function getDb() {
-    if (_db) return _db;
-    const client = new MongoClient(process.env.MONGO_URI);
-    await client.connect();
-    _db = client.db('Master');
-    return _db;
-}
-
 // ── In-memory cache per world — TTL 3 hours ───────────────────────────────────
 const _cache = {};
 const CACHE_TTL = 3 * 60 * 60 * 1000;
