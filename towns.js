@@ -1,6 +1,6 @@
 'use strict';
 
-const { MongoClient } = require('mongodb');
+const { getDb } = require('./database');
 const path = require('path');
 const zlib = require('zlib');
 
