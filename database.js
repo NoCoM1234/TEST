@@ -452,8 +452,7 @@ async function pushTownData(data) {
             alliance_id:   data.alliance_id,
             alliance_name: data.alliance_name,
             favors:        data.favors,
-            towns:         data.towns,
-            trades:        data.trades || [],
+           trades:        data.trades || [],
             updated_at:    now,
         }},
         { upsert: true }
