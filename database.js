@@ -9,7 +9,10 @@ let   _db       = null;
 
 async function getDb() {
     if (_db) return _db;
-    const client = new MongoClient(MONGO_URI);
+    const client = new MongoClient(MONGO_URI, {
+        compressors: ['zlib'],
+        zlibCompressionLevel: 6,
+    });
     await client.connect();
     _db = client.db('Master');
     console.log('[DB] MongoDB connected');
