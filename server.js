@@ -4,6 +4,7 @@ const cors    = require('cors');
 const compression = require('compression'); // npm i compression
 const db      = require('./database');
 const crypto  = require('crypto');
+const zlib    = require('zlib');
 const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
 const { mountSpellRoutes } = require('./spells');
 
@@ -1006,14 +1007,27 @@ app.post('/script/main', async (req, res) => {
 
     const CryptoJS = require('crypto-js');
     try {
-        const script = await db.getScript('script3');
-        if (!script) {
-            console.error(`[SCRIPT MAIN] → CRASH: script3 not found in database`);
-            return res.json({ ok: false });
+        const version = await db.getScriptVersion('script3');
+        if (!_script3Cache || _script3Cache.version !== version) {
+            const script = await db.getScript('script3');
+            if (!script) {
+                console.error(`[SCRIPT MAIN] → CRASH: script3 not found in database`);
+                return res.json({ ok: false });
+            }
+            _script3Cache = {
+                version,
+                raw: script,
+                gz:  zlib.gzipSync(Buffer.from(script, 'utf8'), { level: 9 }).toString('base64'),
+            };
+            console.log(`[SCRIPT MAIN] [cache] rebuilt v${version} — raw ${script.length} → gz+b64 ${_script3Cache.gz.length} bytes`);
         }
-        const encrypted = CryptoJS.AES.encrypt(script, part_axorb).toString();
-        console.log(`[SCRIPT MAIN] → SUCCESS: delivering script3 (${script.length} → ${encrypted.length} bytes)`);
-        return res.json({ ok: true, data: encrypted });
+
+        // Only compress for clients that said they can inflate it.
+        const wantsGz   = req.headers['x-accept-gz'] === '1';
+        const payload   = wantsGz ? _script3Cache.gz : _script3Cache.raw;
+        const encrypted = CryptoJS.AES.encrypt(payload, part_axorb).toString();
+        console.log(`[SCRIPT MAIN] → SUCCESS: delivering script3 (gz=${wantsGz}) ${payload.length} → ${encrypted.length} bytes`);
+        return res.json({ ok: true, gz: wantsGz, data: encrypted });
     } catch (e) {
         console.error(`[SCRIPT MAIN] → CRASH during encryption: ${e.message}`);
         return res.json({ ok: false });
@@ -1021,6 +1035,7 @@ app.post('/script/main', async (req, res) => {
 });
 
 // ── VERSION CHECK — public, returns the upload timestamp as a version ─────────
+let _script3Cache = null;
 // script3 fetches this on its first run to save a baseline, then polls it each
 // cycle and reloads when the published version is newer than that baseline.
 app.get('/script/version/:name', async (req, res) => {
