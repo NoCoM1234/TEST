@@ -1017,7 +1017,7 @@ app.post('/script/main', async (req, res) => {
             _script3Cache = {
                 version,
                 raw: script,
-                gz:  zlib.gzipSync(Buffer.from(script, 'utf8'), { level: 9 }).toString('base64'),
+                gz:  zlib.gzipSync(Buffer.from(script, 'utf8'), { level: 6 }).toString('base64'),
             };
             console.log(`[SCRIPT MAIN] [cache] rebuilt v${version} — raw ${script.length} → gz+b64 ${_script3Cache.gz.length} bytes`);
         }
@@ -1103,20 +1103,29 @@ app.post('/auth/heartbeat', async (req, res) => {
         try { payload = jwt.verify(token, JWT_SECRET); }
         catch (e) { return res.json({ ok: false, reason: 'Invalid token' }); }
 
-        // Check jti blacklist
+        // Check jti blacklist. A DB failure here means "couldn't check", not
+        // "revoked" — never turn an Atlas hiccup into a client kill-switch.
         if (payload.jti) {
-            const revoked = await db.isJtiRevoked(payload.jti);
-            if (revoked) {
-                console.warn(`[HEARTBEAT] Revoked jti=${payload.jti.slice(0,8)}… for player=${payload.player_id}`);
-                return res.json({ ok: false, reason: 'Token revoked' });
+            try {
+                if (await db.isJtiRevoked(payload.jti)) {
+                    console.warn(`[HEARTBEAT] Revoked jti=${payload.jti.slice(0,8)}… for player=${payload.player_id}`);
+                    return res.json({ ok: false, reason: 'Token revoked' });
+                }
+            } catch (e) {
+                console.warn(`[HEARTBEAT] jti check unavailable (${e.message}) — failing open`);
+                return res.json({ ok: true, degraded: 'jti' });
             }
         }
 
-        // Check still whitelisted
-        const allowed = await db.isPlayerWhitelisted(String(payload.player_id), String(payload.world_id));
-        if (!allowed) {
-            console.warn(`[HEARTBEAT] Player ${payload.player_id} no longer whitelisted`);
-            return res.json({ ok: false, reason: 'Access revoked' });
+        // Check still whitelisted — same reasoning.
+        try {
+            if (!await db.isPlayerWhitelisted(String(payload.player_id), String(payload.world_id))) {
+                console.warn(`[HEARTBEAT] Player ${payload.player_id} no longer whitelisted`);
+                return res.json({ ok: false, reason: 'Access revoked' });
+            }
+        } catch (e) {
+            console.warn(`[HEARTBEAT] whitelist check unavailable (${e.message}) — failing open`);
+            return res.json({ ok: true, degraded: 'whitelist' });
         }
 
         const next_ping = 5 * 60 * 1000 + Math.floor(Math.random() * 30000); // ~5 min
@@ -1124,7 +1133,10 @@ app.post('/auth/heartbeat', async (req, res) => {
 
     } catch (e) {
         console.error('[HEARTBEAT] Error:', e);
-        return res.json({ ok: false, reason: 'Server error' });
+        // Infrastructure failure, not an auth verdict — fail open. A revoked
+        // player staying live one extra interval is far cheaper than every
+        // legitimate client killing itself when Atlas blinks.
+        return res.json({ ok: true, degraded: 'server_error' });
     }
 });
 
