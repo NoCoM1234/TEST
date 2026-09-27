@@ -233,6 +233,10 @@ app.post('/players/push', verifyHmac, async (req, res) => {
         towns_data:     townsData,
         status:         parseInt(b.status) || 3,
     });
+    // Troop history: the member's first push of the day becomes that day's
+    // snapshot. Fire-and-forget — never slows down or fails the push itself.
+    db.saveTroopSnapshot(String(b.world), String(b.id), b.name, b.alliance || '', b.troops)
+        .catch(e => console.error('[TroopHistory] save failed:', e.message));
     return res.json({ ok: true });
 });
 
@@ -254,6 +258,31 @@ app.get('/players/:world/:playerId/towns', async (req, res) => {
     const towns = await db.getPlayerTowns(world, playerId);
     if (towns === null) return res.status(404).json({ ok: false, error: 'Player not found' });
     return res.json({ ok: true, towns });
+});
+
+// ── Troop history (Alliance tab): recorded days, oldest first ────────────────
+app.get('/troop-history/:worldId/dates', async (req, res) => {
+    try {
+        const dates = await db.getTroopHistoryDates(req.params.worldId);
+        return res.json({ ok: true, world_id: req.params.worldId, dates });
+    } catch (e) {
+        console.error('[/troop-history/dates] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// ── Troop history: one day + the previous recorded day (for the +/- line) ────
+app.get('/troop-history/:worldId/:date', async (req, res) => {
+    try {
+        const { worldId, date } = req.params;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad(res, 'date must be YYYY-MM-DD');
+        const day = await db.getTroopHistoryDay(worldId, date);
+        if (!day) return res.status(404).json({ ok: false, error: 'No snapshot for this day' });
+        return res.json({ ok: true, world_id: worldId, ...day });
+    } catch (e) {
+        console.error('[/troop-history/:date] Error:', e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
 });
 
 // ── GET /towns/:world/:townId1/:townId2 ───────────────────────────────────────
