@@ -42,6 +42,8 @@ async function getDb() {
     await _db.collection('world_temples').createIndex({ world_id: 1 }, { unique: true });
     // History: one entry per world per UTC day (keyframe or diff)
     await _db.collection('world_history').createIndex({ world_id: 1, date: 1 }, { unique: true });
+    // Troop history (Alliance tab): one entry per world per Athens day (keyframe or diff)
+    await _db.collection('troop_history').createIndex({ world_id: 1, date: 1 }, { unique: true });
     await _db.collection('jwt_blacklist').createIndex({ jti: 1 }, { unique: true });
     // TTL index: MongoDB auto-deletes expired blacklist entries (expires_at is a Date)
     await _db.collection('jwt_blacklist').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
@@ -1024,6 +1026,279 @@ async function getHistoryRange(world_id, from, to) {
     return { base: { date: baseDate, state: baseState }, diffs };
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ── TROOP HISTORY (Alliance tab) ──────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// One entry per world per day (Europe/Athens calendar day) holding every
+// member's troop totals, so the Alliance tab can step back day by day.
+// Same storage as the world history above — keyframe + deltas, gzipped with
+// gzJson / gunzJson:
+//
+//   type: 'keyframe' — full gzipped state { players }
+//   type: 'diff'     — gzipped delta against the PREVIOUS RECORDED day
+//
+// State: players[pid] = { n: name, a: alliance, t: { unit: count },
+//                         d: 'YYYY-MM-DD' last day recorded, h: unix secs of it }
+// Members who don't push on a day are carried forward unchanged, so a day's
+// state always holds everyone's last known troops; `d === date` says whether
+// the member was actually recorded that day.
+//
+// Snapshot = a member's FIRST push of the day (/players/push already runs on
+// startup and hourly). Later pushes that day are ignored. The day's document
+// is rewritten as members come online, so it fills up through the day.
+//
+// Retention: 60 days. pruneTroopHistory() deletes older days, first rewriting
+// the oldest kept day as a keyframe if it is a diff — a TTL index would delete
+// keyframes out from under the diffs that chain on them.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TROOP_KEYFRAME_INTERVAL_DAYS = 30;
+const TROOP_RETENTION_DAYS         = 60;
+const TROOP_SHOW_DAYS              = 7;    // a day lists members recorded within its last 7 days
+
+// Calendar day in Greek time, so every member's day flips at the same midnight
+// regardless of the server's (UTC) clock or the player's PC clock.
+const _athensDateFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Athens', year: 'numeric', month: '2-digit', day: '2-digit',
+});
+function athensDateString(ts = Date.now()) {
+    const p = Object.fromEntries(_athensDateFmt.formatToParts(new Date(ts)).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;   // "YYYY-MM-DD"
+}
+function troopAddDays(date, n) {
+    return new Date(Date.parse(date) + n * 86400000).toISOString().slice(0, 10);
+}
+function troopDaysBetween(a, b) {
+    return Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
+}
+
+// { unit: count } with only positive integers and sane unit keys
+function cleanTroops(raw) {
+    let obj = raw;
+    if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return {}; } }
+    const out = {};
+    if (!obj || typeof obj !== 'object') return out;
+    for (const [u, v] of Object.entries(obj)) {
+        const n = Math.floor(Number(v));
+        if (/^[a-z_]{1,32}$/.test(u) && Number.isFinite(n) && n > 0) out[u] = n;
+    }
+    return out;
+}
+
+// ── Diff / apply ──────────────────────────────────────────────────────────────
+// changed[pid] holds only what moved: n / a / d / h, and t: { unit: newCount }
+// where 0 means the unit is gone. Unchanged members don't appear at all.
+
+function diffTroopPlayers(oldP, newP) {
+    oldP = oldP || {}; newP = newP || {};
+    const added = {}, removed = [], changed = {};
+    for (const id in newP) {
+        const o = oldP[id], n = newP[id];
+        if (!o) { added[id] = n; continue; }
+        const ch = {};
+        for (const k of ['n', 'a', 'd', 'h']) if (n[k] !== o[k]) ch[k] = n[k];
+        const ot = o.t || {}, nt = n.t || {}, tch = {};
+        for (const u in nt) if (nt[u] !== ot[u]) tch[u] = nt[u];
+        for (const u in ot) if (!(u in nt)) tch[u] = 0;
+        if (Object.keys(tch).length) ch.t = tch;
+        if (Object.keys(ch).length) changed[id] = ch;
+    }
+    for (const id in oldP) if (!(id in newP)) removed.push(id);
+    return { added, removed, changed };
+}
+
+// Returns a NEW state; never mutates `state` (cached states are shared).
+function applyTroopDiff(state, payload) {
+    const players = { ...((state && state.players) || {}) };
+    const d = payload.players;
+    for (const id of d.removed) delete players[id];
+    for (const id in d.changed) {
+        const base = players[id];
+        if (!base) continue;
+        const ch = d.changed[id];
+        const p  = { ...base, t: { ...(base.t || {}) } };
+        for (const k of ['n', 'a', 'd', 'h']) if (k in ch) p[k] = ch[k];
+        if (ch.t) for (const u in ch.t) { if (ch.t[u]) p.t[u] = ch.t[u]; else delete p.t[u]; }
+        players[id] = p;
+    }
+    for (const id in d.added) players[id] = d.added[id];
+    return { players };
+}
+
+// State at the latest recorded day <= date (inclusive) or < date.
+// Returns { date: <that recorded day>, players } or null.
+async function reconstructTroopsAt(world_id, date, inclusive = true) {
+    const db  = await getDb();
+    const col = db.collection('troop_history');
+    const cmp = inclusive ? '$lte' : '$lt';
+    const kf  = await col.find({ world_id, type: 'keyframe', date: { [cmp]: date } })
+        .sort({ date: -1 }).limit(1).toArray();
+    if (!kf.length) return null;
+
+    let state = gunzJson(kf[0].data);
+    let at    = kf[0].date;
+    const diffs = await col.find({ world_id, type: 'diff', date: { $gt: kf[0].date, [cmp]: date } })
+        .sort({ date: 1 })
+        .toArray();
+    for (const row of diffs) { state = applyTroopDiff(state, gunzJson(row.data)); at = row.date; }
+    return { date: at, players: state.players || {} };
+}
+
+// ── Write path ────────────────────────────────────────────────────────────────
+// In-process only (Render runs one instance). Worst case after a restart: one
+// extra DB read per member on their next push.
+const _troopSeen  = new Map();   // `${world}:${date}` → Set(pid) already recorded today
+const _troopPrev  = new Map();   // `${world}:${date}` → state before `date` (past days never change)
+const _troopLocks = new Map();   // world → promise chain, so one member's write can't clobber another's
+
+function withTroopLock(world_id, fn) {
+    const prev = _troopLocks.get(world_id) || Promise.resolve();
+    const run  = prev.then(fn, fn);
+    _troopLocks.set(world_id, run.catch(() => {}));
+    return run;
+}
+function troopKeepOnlyKey(map, world_id, key) {
+    for (const k of map.keys()) if (k.startsWith(world_id + ':') && k !== key) map.delete(k);
+}
+
+// Called from /players/push. First push of the (Athens) day per member wins.
+async function saveTroopSnapshot(world_id, player_id, name, alliance, troops) {
+    world_id  = String(world_id);
+    player_id = String(player_id);
+    const date = athensDateString();
+    const key  = `${world_id}:${date}`;
+    if (_troopSeen.get(key)?.has(player_id)) return { saved: false, reason: 'already-recorded', date };
+
+    return withTroopLock(world_id, async () => {
+        troopKeepOnlyKey(_troopSeen, world_id, key);
+        troopKeepOnlyKey(_troopPrev, world_id, key);
+        let seen = _troopSeen.get(key);
+        if (!seen) { seen = new Set(); _troopSeen.set(key, seen); }
+        if (seen.has(player_id)) return { saved: false, reason: 'already-recorded', date };
+
+        const db  = await getDb();
+        const col = db.collection('troop_history');
+
+        let prev = _troopPrev.get(key);
+        if (prev === undefined) {
+            prev = await reconstructTroopsAt(world_id, date, false);   // latest recorded day < today, or null
+            _troopPrev.set(key, prev);
+        }
+
+        const doc = await col.findOne({ world_id, date }, { projection: { type: 1, data: 1 } });
+        let state;
+        if (doc) {
+            state = doc.type === 'keyframe'
+                ? gunzJson(doc.data)
+                : applyTroopDiff(prev || { players: {} }, gunzJson(doc.data));
+        } else {
+            state = { players: { ...((prev && prev.players) || {}) } };   // carry everyone forward
+        }
+
+        // Anyone already in today's document counts as recorded
+        for (const [id, p] of Object.entries(state.players)) if (p && p.d === date) seen.add(id);
+        if (seen.has(player_id)) return { saved: false, reason: 'already-recorded', date };
+
+        state.players[player_id] = {
+            n: String(name || ''),
+            a: String(alliance || ''),
+            t: cleanTroops(troops),
+            d: date,
+            h: Math.floor(Date.now() / 1000),
+        };
+
+        // Stop carrying members not recorded for longer than the retention window
+        const oldest = troopAddDays(date, -TROOP_RETENTION_DAYS);
+        for (const [id, p] of Object.entries(state.players)) if (!p || !p.d || p.d < oldest) delete state.players[id];
+
+        // New day: keyframe every 30 days (or when there is no base), else diff
+        let type = doc ? doc.type : null;
+        if (!type) {
+            const lastKf = await col.find({ world_id, type: 'keyframe', date: { $lt: date } }, { projection: { date: 1 } })
+                .sort({ date: -1 }).limit(1).toArray();
+            type = (!prev || !lastKf.length || troopDaysBetween(lastKf[0].date, date) >= TROOP_KEYFRAME_INTERVAL_DAYS)
+                ? 'keyframe' : 'diff';
+        }
+        if (type === 'diff' && !prev) type = 'keyframe';
+
+        const payload  = type === 'keyframe' ? state : { players: diffTroopPlayers(prev.players, state.players) };
+        const data     = gzJson(payload);
+        const recorded = Object.values(state.players).filter(p => p.d === date).length;
+        const now      = Math.floor(Date.now() / 1000);
+        await col.updateOne(
+            { world_id, date },
+            {
+                $set:         { type, data, gz_bytes: data.length, players: recorded, updated_at: now },
+                $setOnInsert: { created_at: now },
+            },
+            { upsert: true }
+        );
+        seen.add(player_id);
+        return { saved: true, date, type, bytes: data.length };
+    });
+}
+
+// ── Read path ─────────────────────────────────────────────────────────────────
+
+// Recorded days (tiny — dates + sizes only), oldest first.
+async function getTroopHistoryDates(world_id) {
+    const db = await getDb();
+    return db.collection('troop_history')
+        .find({ world_id: String(world_id) }, { projection: { _id: 0, date: 1, type: 1, gz_bytes: 1, players: 1 } })
+        .sort({ date: 1 })
+        .toArray();
+}
+
+// One day for the Alliance tab: that day's members (recorded within the last
+// TROOP_SHOW_DAYS days of it) + the same members' state on the previous
+// recorded day, for the +/- line. null when the day itself wasn't recorded.
+async function getTroopHistoryDay(world_id, date) {
+    world_id = String(world_id);
+    const cur = await reconstructTroopsAt(world_id, date, true);
+    if (!cur || cur.date !== date) return null;
+    const prev = await reconstructTroopsAt(world_id, date, false);
+
+    const since   = troopAddDays(date, -TROOP_SHOW_DAYS);
+    const players = {};
+    for (const [id, p] of Object.entries(cur.players)) if (p.d >= since) players[id] = p;
+
+    let prevOut = null;
+    if (prev) {
+        const pp = {};
+        for (const id of Object.keys(players)) if (prev.players[id]) pp[id] = prev.players[id];
+        prevOut = { date: prev.date, players: pp };
+    }
+    return { date, players, prev: prevOut };
+}
+
+// ── Retention ─────────────────────────────────────────────────────────────────
+// Keeps the last 60 days (today included). Runs at startup and daily — on
+// Render's free tier the process restarts after every sleep, so startup alone
+// already runs it about daily.
+async function pruneTroopHistory() {
+    const db     = await getDb();
+    const col    = db.collection('troop_history');
+    const cutoff = troopAddDays(athensDateString(), -(TROOP_RETENTION_DAYS - 1));
+    const worlds = await col.distinct('world_id', { date: { $lt: cutoff } });
+    for (const world_id of worlds) {
+        await withTroopLock(world_id, async () => {
+            // Rebase first: the oldest kept day must be a keyframe once its
+            // predecessors are gone.
+            const first = await col.find({ world_id, date: { $gte: cutoff } }, { projection: { date: 1, type: 1 } })
+                .sort({ date: 1 }).limit(1).toArray();
+            if (first.length && first[0].type === 'diff') {
+                const st = await reconstructTroopsAt(world_id, first[0].date, true);
+                if (!st) return;   // chain already broken — leave everything for inspection
+                const data = gzJson({ players: st.players });
+                await col.updateOne({ _id: first[0]._id }, { $set: { type: 'keyframe', data, gz_bytes: data.length } });
+            }
+            const r = await col.deleteMany({ world_id, date: { $lt: cutoff } });
+            if (r.deletedCount) console.log(`[TroopHistory] ${world_id}: pruned ${r.deletedCount} day(s) before ${cutoff}`);
+        });
+    }
+}
+
 // ── JWT Blacklist ─────────────────────────────────────────────────────────────
 // Revoked JTIs are stored here so tokens can be killed before natural expiry.
 // MongoDB TTL index auto-cleans entries once the original token would have expired.
@@ -1053,6 +1328,8 @@ async function isJtiRevoked(jti) {
 // ── Startup ───────────────────────────────────────────────────────────────────
 getDb().catch(err => console.error('[DB] Connection failed:', err));
 setInterval(cleanupStale, 86400000);
+pruneTroopHistory().catch(err => console.error('[TroopHistory] prune failed:', err.message));
+setInterval(() => pruneTroopHistory().catch(err => console.error('[TroopHistory] prune failed:', err.message)), 86400000);
 
 module.exports = {
     getDb, 
@@ -1100,6 +1377,11 @@ module.exports = {
     getHistoryDates,
     getHistoryRange,
     reconstructWorldAtDate,
+    // ── Troop history (Alliance tab) ───────────────────────────────────────────
+    saveTroopSnapshot,
+    getTroopHistoryDates,
+    getTroopHistoryDay,
+    pruneTroopHistory,
     // ── JWT blacklist ──────────────────────────────────────────────────────────
     revokeJti,
     isJtiRevoked,
