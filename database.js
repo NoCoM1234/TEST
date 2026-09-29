@@ -1039,7 +1039,9 @@ async function getHistoryRange(world_id, from, to) {
 //   type: 'diff'     — gzipped delta against the PREVIOUS RECORDED day
 //
 // State: players[pid] = { n: name, a: alliance, t: { unit: count },
-//                         d: 'YYYY-MM-DD' last day recorded, h: unix secs of it }
+//                         d: 'YYYY-MM-DD' last day recorded, h: unix secs of it,
+//                         c: cultural level, w: [own town ids, sorted] }
+// (c / w exist from the day this was deployed; older days simply lack them)
 // Members who don't push on a day are carried forward unchanged, so a day's
 // state always holds everyone's last known troops; `d === date` says whether
 // the member was actually recorded that day.
@@ -1097,7 +1099,9 @@ function diffTroopPlayers(oldP, newP) {
         const o = oldP[id], n = newP[id];
         if (!o) { added[id] = n; continue; }
         const ch = {};
-        for (const k of ['n', 'a', 'd', 'h']) if (n[k] !== o[k]) ch[k] = n[k];
+        for (const k of ['n', 'a', 'd', 'h', 'c']) if (n[k] !== o[k]) ch[k] = n[k];
+        // Town list: whole array when it changed (null = no longer known)
+        if (JSON.stringify(n.w || null) !== JSON.stringify(o.w || null)) ch.w = n.w || null;
         const ot = o.t || {}, nt = n.t || {}, tch = {};
         for (const u in nt) if (nt[u] !== ot[u]) tch[u] = nt[u];
         for (const u in ot) if (!(u in nt)) tch[u] = 0;
@@ -1118,7 +1122,8 @@ function applyTroopDiff(state, payload) {
         if (!base) continue;
         const ch = d.changed[id];
         const p  = { ...base, t: { ...(base.t || {}) } };
-        for (const k of ['n', 'a', 'd', 'h']) if (k in ch) p[k] = ch[k];
+        for (const k of ['n', 'a', 'd', 'h', 'c']) if (k in ch) p[k] = ch[k];
+        if ('w' in ch) { if (ch.w) p.w = ch.w; else delete p.w; }
         if (ch.t) for (const u in ch.t) { if (ch.t[u]) p.t[u] = ch.t[u]; else delete p.t[u]; }
         players[id] = p;
     }
@@ -1163,7 +1168,8 @@ function troopKeepOnlyKey(map, world_id, key) {
 }
 
 // Called from /players/push. First push of the (Athens) day per member wins.
-async function saveTroopSnapshot(world_id, player_id, name, alliance, troops) {
+// extra = { cl: cultural level, towns: [own town ids] } — both optional.
+async function saveTroopSnapshot(world_id, player_id, name, alliance, troops, extra = {}) {
     world_id  = String(world_id);
     player_id = String(player_id);
     const date = athensDateString();
@@ -1206,6 +1212,8 @@ async function saveTroopSnapshot(world_id, player_id, name, alliance, troops) {
             t: cleanTroops(troops),
             d: date,
             h: Math.floor(Date.now() / 1000),
+            ...(Number.isFinite(extra.cl)    ? { c: extra.cl }    : {}),
+            ...(Array.isArray(extra.towns)   ? { w: extra.towns } : {}),
         };
 
         // Stop carrying members not recorded for longer than the retention window
