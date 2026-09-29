@@ -235,7 +235,15 @@ app.post('/players/push', verifyHmac, async (req, res) => {
     });
     // Troop history: the member's first push of the day becomes that day's
     // snapshot. Fire-and-forget — never slows down or fails the push itself.
-    db.saveTroopSnapshot(String(b.world), String(b.id), b.name, b.alliance || '', b.troops)
+    // Cultural level + own town ids ride along for the weekly report
+    // (CL-ups, towns gained / lost).
+    let snapTownIds;
+    try {
+        const td = JSON.parse(townsData);
+        if (Array.isArray(td)) snapTownIds = td.map(t => Number(t && t.id)).filter(Number.isFinite).sort((x, y) => x - y);
+    } catch (e) {}
+    db.saveTroopSnapshot(String(b.world), String(b.id), b.name, b.alliance || '', b.troops,
+        { cl: parseInt(b.cultural_level, 10), towns: snapTownIds })
         .catch(e => console.error('[TroopHistory] save failed:', e.message));
     return res.json({ ok: true });
 });
