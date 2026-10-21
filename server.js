@@ -311,7 +311,7 @@ app.post('/towns/batch', async (req, res) => {
     const { world, ids, owner } = req.body;
     if (!world) return bad(res, 'Missing world');
     if (!Array.isArray(ids) || ids.length === 0) return bad(res, 'Body must have ids array');
-    if (ids.length > 500) return bad(res, 'Max 500 ids per request');
+    if (ids.length > 50000) return bad(res, 'Max 500 ids per request');
 
     const towns = await getTownsBatch(world, ids, owner === true || owner === 'true');
     if (!towns) return bad(res, `No world data for ${world}`, 404);
