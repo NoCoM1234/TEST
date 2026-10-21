@@ -17,7 +17,7 @@ const { getDb } = require('./database');
 const SPELL_MAX_PER_COMMAND = 24;
 const SPELL_GRACE_SECONDS   = 6 * 3600;
 const SPELL_FALLBACK_TTL    = 7 * 24 * 3600;
-const MAX_IDS_PER_BATCH     = 500;
+const MAX_IDS_PER_BATCH     = 50000;
 
 let _indexes = null;
 
