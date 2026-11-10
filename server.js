@@ -7,6 +7,7 @@ const crypto  = require('crypto');
 const zlib    = require('zlib');
 const jwt     = require('jsonwebtoken'); // npm i jsonwebtoken
 const { mountSpellRoutes } = require('./spells');
+const worldRefresh = require('./worldRefresh');
 
 // ── ENV ───────────────────────────────────────────────────────────────────────
 // Required in Render environment variables:
@@ -14,6 +15,10 @@ const { mountSpellRoutes } = require('./spells');
 //   ADMIN_KEY           — already set
 //   AUTH_REGISTER_SECRET — already set
 //   MONGO_URI           — already set
+//
+// Optional:
+//   WORLD_IDS           — comma-separated worlds for the world-data refresh
+//                         (default: gr122,gr123,gr126)
 //
 // No longer needed (remove from Render):
 //   WATCHER_SESSION     — watcher is now a browser script, not a server HTTP call
@@ -1185,42 +1190,40 @@ app.post('/config/fetch', (_req, res) => {
     res.json({ ok: false });
 });
 
-// ── ADMIN world data push ─────────────────────────────────────────────────────
-// AFTER:
+// ── ADMIN world data push (legacy GitHub Actions path) ───────────────────────
 app.post('/admin/world-data', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
     const { world_id, towns, islands, players, alliances, world_settings } = req.body;
     if (!world_id) return bad(res, 'Missing world_id');
     if (!Array.isArray(towns) || !Array.isArray(islands)) return bad(res, 'towns and islands must be arrays');
-    await db.upsertWorldData(world_id, towns, islands);
-    if (Array.isArray(players) && Array.isArray(alliances)) {
-        await db.upsertWorldMeta(world_id, players, alliances, world_settings || {});
-    }
-    invalidateCache(world_id);
-    console.log(`[Admin] World data updated for ${world_id} — ${towns.length} towns, ${islands.length} islands, settings keys: ${Object.keys(world_settings || {}).length}`);
-
-    // ── History capture: first push of each UTC day becomes that day's snapshot.
-    // getMapData is called AFTER upsert+invalidate so we diff the transformed
-    // /map format (8-field towns, players/alliances maps) that the frontend
-    // consumes. saveWorldHistory no-ops if today is already recorded.
     try {
-        const snap = await getMapData(world_id);
-        if (snap) {
-            const r = await db.saveWorldHistory(world_id, {
-                towns:     snap.towns,
-                players:   snap.players,
-                alliances: snap.alliances,
-            });
-            if (r.saved) console.log(`[History] ${world_id} ${r.date} recorded as ${r.type} (${(r.bytes / 1024).toFixed(1)} KB gz)`);
-        }
+        await worldRefresh.ingestWorldData(world_id, { towns, islands, players, alliances, world_settings });
+        return res.json({ ok: true });
     } catch (e) {
-        console.error(`[History] Capture failed for ${world_id}:`, e.message);
+        console.error(`[/admin/world-data] ${world_id} failed:`, e.message);
+        return res.status(500).json({ ok: false, error: 'Server error' });
     }
-
-    return res.json({ ok: true });
 });
- 
-// ADD before the 404 handler (before line 1130):
+
+// ── World data refresh — server fetches grepolis.com itself (cron-job.org) ───
+// Replies immediately (202) and works in the background, so cron-job.org's
+// 30 s timeout never matters.
+//   POST /admin/refresh-world-data              → all worlds in WORLD_IDS
+//   POST /admin/refresh-world-data?world=gr123  → one world
+app.post('/admin/refresh-world-data', (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    const only = req.query.world ? [String(req.query.world)] : undefined;
+    const r    = worldRefresh.refreshAllWorlds(only, 'cron');
+    return res.status(r.started ? 202 : 200).json({ ok: true, ...r });
+});
+
+// Result of the last/current run (per-world ok/error, counts, timings).
+//   curl https://<host>/admin/refresh-world-data/status -H "x-admin-key: KEY"
+app.get('/admin/refresh-world-data/status', (req, res) => {
+    if (req.headers['x-admin-key'] !== ADMIN_KEY) return res.status(403).json({ ok: false, error: 'Forbidden' });
+    return res.json({ ok: true, ...worldRefresh.getRefreshStatus() });
+});
+
 // ── One-time: compress legacy world_data documents in place ───────────────────
 // Runs ON the server (Render can already reach Atlas — no IP whitelisting
 // needed). Idempotent and admin-key protected; safe to call repeatedly.
@@ -1429,4 +1432,5 @@ app.use((_req, res) => res.status(404).json({ ok: false, error: 'Not found' }));
 
 app.listen(PORT, () => {
     console.log(`[Server] Master API v2.3.0 running on port ${PORT}`);
+    worldRefresh.scheduleStartupCatchUp();
 });
